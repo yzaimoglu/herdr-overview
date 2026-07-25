@@ -1,0 +1,25 @@
+services:
+  overview-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      HERDR_BIN_PATH: ${HERDR_BIN_PATH:-herdr}
+      HERDR_DEMO: ${HERDR_DEMO:-true}
+      AI_SUB_SERVER_SOCKET: ${AI_SUB_SERVER_SOCKET:-/run/user/1000/ai-sub-server.sock}
+      HOME: ${HOME}
+    volumes:
+      - ${HERDR_HOST_BIN:-${HOME}/.local/bin/herdr}:/usr/local/bin/herdr:ro
+      - ${HOME}:${HOME}:ro
+      - ${AI_SUB_SERVER_SOCKET:-/run/user/1000/ai-sub-server.sock}:/run/user/1000/ai-sub-server.sock
+    restart: unless-stopped
+
+  caddy:
+    build: .
+    depends_on:
+      - overview-api
+    ports:
+      - "127.0.0.1:80:80"
+      # NetBird's wt0 address. Override NETBIRD_IP if the host address changes.
+      - "${NETBIRD_IP:-100.126.169.52}:80:80"
+    restart: unless-stopped

@@ -1,0 +1,10 @@
+FROM golang:1.26 AS build
+WORKDIR /app/server
+COPY server/go.mod ./
+COPY server/*.go ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/herdr-overview-api .
+
+FROM debian:bookworm-slim
+COPY --from=build /out/herdr-overview-api /usr/local/bin/herdr-overview-api
+EXPOSE 8787
+ENTRYPOINT ["/usr/local/bin/herdr-overview-api"]

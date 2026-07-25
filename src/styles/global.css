@@ -1,0 +1,100 @@
+@import '@cloudflare/kumo/styles/standalone';
+
+:root {
+  color-scheme: light;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-feature-settings: "kern" 1, "liga" 1;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-kumo-canvas);
+}
+
+.session-search-input {
+  padding-left: 2.75rem !important;
+}
+
+.session-search-icon {
+  left: 1rem;
+}
+
+.usage-section-header {
+  margin-bottom: 1.5rem !important;
+}
+
+.session-page-header-inner {
+  padding-block: 0.75rem;
+}
+
+.session-page-main {
+  padding-top: 1.5rem !important;
+}
+
+@media (min-width: 1024px) {
+  .session-page-main {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 1fr);
+  }
+}
+
+.session-page-chat {
+  height: 80vh;
+  height: 80dvh;
+  min-height: 0;
+}
+
+.session-chat-scroll {
+  overscroll-behavior: contain;
+}
+
+.session-composer-actions {
+  margin-top: 0.75rem !important;
+}
+
+.session-filter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+@media (min-width: 768px) {
+  .session-filter-bar {
+    flex-direction: row;
+    align-items: center;
+  }
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--color-kumo-brand);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

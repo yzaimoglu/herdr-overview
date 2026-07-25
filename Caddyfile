@@ -1,0 +1,14 @@
+:80 {
+	root * /srv/site
+
+	@api path /api/*
+	handle @api {
+		reverse_proxy overview-api:8787
+	}
+
+	handle {
+		encode zstd gzip
+		try_files {path} /index.html
+		file_server
+	}
+}

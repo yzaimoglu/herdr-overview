@@ -1,0 +1,26 @@
+{
+  "name": "herdr-overview",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro check && astro build",
+    "preview": "astro preview",
+    "check": "astro check"
+  },
+  "dependencies": {
+    "@cloudflare/kumo": "^2.8.0",
+    "@phosphor-icons/react": "^2.1.10",
+    "@astrojs/react": "^4.3.0",
+    "astro": "^5.13.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.9",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "typescript": "^5.8.3"
+  },
+  "packageManager": "bun@1.2.19"
+}
