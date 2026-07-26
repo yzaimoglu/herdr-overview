@@ -22,6 +22,13 @@ func TestOutputUpdateDetectsUnchangedAndReplacedOutput(t *testing.T) {
 	}
 }
 
+func TestOutputUpdateUsesNewSuffixAfterRollingWindow(t *testing.T) {
+	update, changed := outputUpdate("line 1\nline 2\nline 3", "line 2\nline 3\nline 4")
+	if !changed || update != "line 4" {
+		t.Fatalf("unexpected rolling update: changed=%v update=%q", changed, update)
+	}
+}
+
 func TestFormatOutputUsesMarkdownFence(t *testing.T) {
 	if got, want := formatOutput("line 1\nline 2"), "```\nline 1\nline 2\n```"; got != want {
 		t.Fatalf("formatOutput() = %q, want %q", got, want)

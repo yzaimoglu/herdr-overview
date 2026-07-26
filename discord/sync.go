@@ -142,8 +142,14 @@ func (s *Syncer) archivePane(ctx context.Context, paneID string) error {
 	if !ok || record.Closed || record.ThreadID == "" {
 		return nil
 	}
-	if err := s.discord.SendMessage(ctx, record.ThreadID, fmt.Sprintf("Agent for pane `%s` is no longer available; closing this thread.", paneID)); err != nil {
-		return err
+	if !record.ClosureSent {
+		if err := s.discord.SendMessage(ctx, record.ThreadID, fmt.Sprintf("Agent for pane `%s` is no longer available; closing this thread.", paneID)); err != nil {
+			return err
+		}
+		record.ClosureSent = true
+		if err := s.state.Set(paneID, record); err != nil {
+			return err
+		}
 	}
 	if err := s.discord.ArchiveThread(ctx, record.ThreadID); err != nil {
 		return err

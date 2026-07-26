@@ -12,12 +12,13 @@ import (
 
 // AgentRecord is the persisted Discord mapping and synchronization state for a pane.
 type AgentRecord struct {
-	ThreadID   string    `json:"threadId"`
-	Status     string    `json:"status"`
-	OutputHash string    `json:"outputHash"`
-	Output     string    `json:"output,omitempty"`
-	LastSync   time.Time `json:"lastSync"`
-	Closed     bool      `json:"closed"`
+	ThreadID    string    `json:"threadId"`
+	Status      string    `json:"status"`
+	OutputHash  string    `json:"outputHash"`
+	Output      string    `json:"output,omitempty"`
+	LastSync    time.Time `json:"lastSync"`
+	Closed      bool      `json:"closed"`
+	ClosureSent bool      `json:"closureSent"`
 }
 
 // StateStore keeps pane state in memory and persists it as an atomic JSON file.

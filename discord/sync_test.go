@@ -90,6 +90,7 @@ type fakeDiscordClient struct {
 		content  string
 	}
 	archived       []string
+	archiveErr     error
 	unarchived     []string
 	findErr        error
 	messageStarted chan struct{}
@@ -138,7 +139,7 @@ func (f *fakeDiscordClient) ArchiveThread(_ context.Context, threadID string) er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.archived = append(f.archived, threadID)
-	return nil
+	return f.archiveErr
 }
 
 func (f *fakeDiscordClient) UnarchiveThread(_ context.Context, threadID string) error {
@@ -224,6 +225,34 @@ func TestReconcileArchivesOnlyAfterSuccessfulOverview(t *testing.T) {
 	}
 	if len(discord.archived) != 1 || !storeRecordClosed(store, "gone") {
 		t.Fatalf("missing agent was not archived: archived=%v record=%+v", discord.archived, store.Records()["gone"])
+	}
+}
+
+func TestReconcileDoesNotRepeatClosureNoticeWhenArchiveFails(t *testing.T) {
+	api := &fakeAgentAPI{overview: Overview{Agents: []Agent{{PaneID: "gone", Name: "worker", Status: "idle"}}}}
+	discord := &fakeDiscordClient{archiveErr: errors.New("archive unavailable")}
+	store := testStore(t)
+	syncer := NewSyncer(api, discord, store, testConfig())
+
+	if err := syncer.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	api.overview = Overview{}
+	if err := syncer.Reconcile(context.Background()); err == nil {
+		t.Fatal("expected archive error")
+	}
+	if err := syncer.Reconcile(context.Background()); err == nil {
+		t.Fatal("expected archive error")
+	}
+
+	closureNotices := 0
+	for _, message := range discord.messages {
+		if strings.Contains(message.content, "no longer available") {
+			closureNotices++
+		}
+	}
+	if closureNotices != 1 {
+		t.Fatalf("sent %d closure notices, want 1: %+v", closureNotices, discord.messages)
 	}
 }
 
