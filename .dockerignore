@@ -12,3 +12,6 @@ node_modules
 *.pfx
 credentials.json
 /server/server
+/discord/herdr-discord-bot
+/data/
+discord-state.json
