@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,6 +13,8 @@ const (
 	messageInterrupt = "interrupt"
 	messageClose     = "close"
 	messageIgnore    = "ignore"
+	messageStreamOn  = "stream_on"
+	messageStreamOff = "stream_off"
 )
 
 var errUnknownThread = errors.New("message thread is not linked to a Herdr pane")
@@ -37,6 +40,10 @@ func parseMessage(content string) (kind, body string) {
 		return messageInterrupt, ""
 	case "/close":
 		return messageClose, ""
+	case "/stream on":
+		return messageStreamOn, ""
+	case "/stream off":
+		return messageStreamOff, ""
 	case "":
 		return messageIgnore, ""
 	default:
@@ -74,14 +81,25 @@ func (b *Bot) HandleMessage(ctx context.Context, event MessageEvent) error {
 		if err := b.api.Prompt(ctx, paneID, body); err != nil {
 			return b.agentError(ctx, event.ChannelID, "I couldn't send that prompt to the agent.", "send prompt", err)
 		}
-		if err := b.markOutputPending(paneID); err != nil {
-			return b.agentError(ctx, event.ChannelID, "Prompt sent, but I couldn't track its response.", "track prompt output", err)
-		}
 		if err := b.discord.SendMessage(ctx, event.ChannelID, "Prompt sent."); err != nil {
 			return fmt.Errorf("acknowledge prompt: %w", err)
 		}
 		if err := b.syncer.SyncAgentOutput(ctx, Agent{PaneID: paneID}); err != nil {
 			return b.agentError(ctx, event.ChannelID, "Prompt sent, but I couldn't fetch the latest agent output.", "sync prompt output", err)
+		}
+	case messageStreamOn:
+		if err := b.setStream(ctx, paneID, true); err != nil {
+			return b.agentError(ctx, event.ChannelID, "I couldn't enable output streaming.", "enable output streaming", err)
+		}
+		if err := b.discord.SendMessage(ctx, event.ChannelID, "Output streaming enabled."); err != nil {
+			return fmt.Errorf("acknowledge stream enable: %w", err)
+		}
+	case messageStreamOff:
+		if err := b.setStream(ctx, paneID, false); err != nil {
+			return b.agentError(ctx, event.ChannelID, "Output streaming disabled, but the cursor could not be refreshed.", "refresh stream cursor", err)
+		}
+		if err := b.discord.SendMessage(ctx, event.ChannelID, "Output streaming disabled."); err != nil {
+			return fmt.Errorf("acknowledge stream disable: %w", err)
 		}
 	case messageInterrupt:
 		if err := b.api.Interrupt(ctx, paneID); err != nil {
@@ -99,6 +117,34 @@ func (b *Bot) HandleMessage(ctx context.Context, event MessageEvent) error {
 		}
 	}
 	return nil
+}
+
+func (b *Bot) setStream(ctx context.Context, paneID string, enabled bool) error {
+	record, ok := b.state.Get(paneID)
+	if !ok || record.ThreadID == "" {
+		return fmt.Errorf("no Discord thread mapping for pane %s", paneID)
+	}
+	if enabled {
+		output, err := b.api.Output(ctx, paneID, 0)
+		if err != nil {
+			return err
+		}
+		record.StreamEnabled = true
+		record.Output = normalizeOutput(output)
+		record.OutputHash = fmt.Sprintf("%x", sha256.Sum256([]byte(record.Output)))
+		return b.state.Set(paneID, record)
+	}
+
+	record.StreamEnabled = false
+	output, refreshErr := b.api.Output(ctx, paneID, 0)
+	if refreshErr == nil {
+		record.Output = normalizeOutput(output)
+		record.OutputHash = fmt.Sprintf("%x", sha256.Sum256([]byte(record.Output)))
+	}
+	if err := b.state.Set(paneID, record); err != nil {
+		return err
+	}
+	return refreshErr
 }
 
 func (b *Bot) markOutputPending(paneID string) error {

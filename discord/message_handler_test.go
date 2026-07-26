@@ -143,6 +143,114 @@ func TestParseMessageRecognizesOnlyExactControlCommands(t *testing.T) {
 	}
 }
 
+func TestParseMessageStreamCommands(t *testing.T) {
+	for _, test := range []struct {
+		content string
+		kind    string
+	}{
+		{content: " /stream on ", kind: messageStreamOn},
+		{content: "\n/stream off\t", kind: messageStreamOff},
+		{content: "/stream", kind: messagePrompt},
+		{content: "/stream on now", kind: messagePrompt},
+		{content: "/stream off now", kind: messagePrompt},
+	} {
+		got, _ := parseMessage(test.content)
+		if got != test.kind {
+			t.Fatalf("parseMessage(%q) = %q, want %q", test.content, got, test.kind)
+		}
+	}
+}
+
+func TestHandleMessageEnablesStreamFromCurrentOutput(t *testing.T) {
+	api := &handlerAgentAPI{output: "  current output\r\n"}
+	discord := &handlerDiscordClient{}
+	store := handlerStore(t, AgentRecord{ThreadID: "thread-1"})
+	bot := NewBot(handlerConfig(), api, discord, store, NewSyncer(api, discord, store, handlerConfig()))
+
+	err := bot.HandleMessage(context.Background(), MessageEvent{
+		GuildID: "guild", ChannelID: "thread-1", ParentID: "forum", AuthorID: "111", Content: " /stream on ",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, ok := store.Get("pane-1")
+	if !ok || !record.StreamEnabled || record.Output != "current output" || record.OutputHash != outputHash("current output") {
+		t.Fatalf("stream state = ok %v record %+v", ok, record)
+	}
+	if got := strings.Join(discord.messages, "\n"); got != "Output streaming enabled." {
+		t.Fatalf("acknowledgment = %q", got)
+	}
+}
+
+func TestHandleMessageDisablesStreamAndRefreshesCursor(t *testing.T) {
+	api := &handlerAgentAPI{output: "  refreshed output\n"}
+	discord := &handlerDiscordClient{}
+	store := handlerStore(t, AgentRecord{ThreadID: "thread-1", StreamEnabled: true, Output: "old output", OutputHash: outputHash("old output")})
+	bot := NewBot(handlerConfig(), api, discord, store, NewSyncer(api, discord, store, handlerConfig()))
+
+	err := bot.HandleMessage(context.Background(), MessageEvent{
+		GuildID: "guild", ChannelID: "thread-1", ParentID: "forum", AuthorID: "111", Content: "\n/stream off\t",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, ok := store.Get("pane-1")
+	if !ok || record.StreamEnabled || record.Output != "refreshed output" || record.OutputHash != outputHash("refreshed output") {
+		t.Fatalf("stream state = ok %v record %+v", ok, record)
+	}
+	if got := strings.Join(discord.messages, "\n"); got != "Output streaming disabled." {
+		t.Fatalf("acknowledgment = %q", got)
+	}
+}
+
+func TestHandleMessageDisablesStreamWhenCursorRefreshFails(t *testing.T) {
+	refreshErr := errors.New("output unavailable")
+	api := &handlerAgentAPI{output: "new output", outputErr: refreshErr}
+	discord := &handlerDiscordClient{}
+	store := handlerStore(t, AgentRecord{ThreadID: "thread-1", StreamEnabled: true, Output: "old output", OutputHash: outputHash("old output")})
+	bot := NewBot(handlerConfig(), api, discord, store, NewSyncer(api, discord, store, handlerConfig()))
+
+	err := bot.HandleMessage(context.Background(), MessageEvent{
+		GuildID: "guild", ChannelID: "thread-1", ParentID: "forum", AuthorID: "111", Content: "/stream off",
+	})
+	if !errors.Is(err, refreshErr) {
+		t.Fatalf("error = %v, want %v", err, refreshErr)
+	}
+	record, ok := store.Get("pane-1")
+	if !ok || record.StreamEnabled || record.Output != "old output" || record.OutputHash != outputHash("old output") {
+		t.Fatalf("stream state = ok %v record %+v", ok, record)
+	}
+	if got := strings.Join(discord.messages, "\n"); got != "Output streaming disabled, but the cursor could not be refreshed." {
+		t.Fatalf("acknowledgment = %q", got)
+	}
+}
+
+func TestHandleMessageDoesNotEnableStreamWhenCursorInitializationFails(t *testing.T) {
+	refreshErr := errors.New("output unavailable")
+	api := &handlerAgentAPI{outputErr: refreshErr}
+	discord := &handlerDiscordClient{}
+	store := handlerStore(t, AgentRecord{ThreadID: "thread-1"})
+	bot := NewBot(handlerConfig(), api, discord, store, NewSyncer(api, discord, store, handlerConfig()))
+
+	err := bot.HandleMessage(context.Background(), MessageEvent{
+		GuildID: "guild", ChannelID: "thread-1", ParentID: "forum", AuthorID: "111", Content: "/stream on",
+	})
+	if !errors.Is(err, refreshErr) {
+		t.Fatalf("error = %v, want %v", err, refreshErr)
+	}
+	record, ok := store.Get("pane-1")
+	if !ok || record.StreamEnabled || record.Output != "" || record.OutputHash != "" {
+		t.Fatalf("stream state = ok %v record %+v", ok, record)
+	}
+	if got := strings.Join(discord.messages, "\n"); got != "I couldn't enable output streaming." {
+		t.Fatalf("acknowledgment = %q", got)
+	}
+}
+
+func outputHash(output string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(normalizeOutput(output))))
+}
+
 func TestAuthorizedRequiresGuildForumUserAndNonBot(t *testing.T) {
 	bot := &Bot{config: Config{
 		GuildID:        "guild",
@@ -185,7 +293,7 @@ func TestHandleMessageForwardsAuthorizedPromptAndSyncsOutput(t *testing.T) {
 	}
 }
 
-func TestHandlePromptPublishesFirstRollingResponseSnapshot(t *testing.T) {
+func TestHandlePromptDoesNotForceRollingResponseSnapshot(t *testing.T) {
 	previous := "old terminal screen"
 	current := "new terminal screen"
 	api := &fakeAgentAPI{outputs: map[string]string{"pane-1": current}}
@@ -204,8 +312,8 @@ func TestHandlePromptPublishesFirstRollingResponseSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(discord.messages) != 2 || discord.messages[0].content != "Prompt sent." || !strings.Contains(discord.messages[1].content, current) {
-		t.Fatalf("prompt response snapshot missing: %+v", discord.messages)
+	if len(discord.messages) != 1 || discord.messages[0].content != "Prompt sent." {
+		t.Fatalf("prompt acknowledgment = %+v", discord.messages)
 	}
 }
 

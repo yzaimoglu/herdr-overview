@@ -18,6 +18,7 @@ type AgentRecord struct {
 	Output            string    `json:"output,omitempty"`
 	OutputMessageHash string    `json:"outputMessageHash,omitempty"`
 	OutputPending     bool      `json:"outputPending,omitempty"`
+	StreamEnabled     bool      `json:"streamEnabled,omitempty"`
 	LastSync          time.Time `json:"lastSync"`
 	Closed            bool      `json:"closed"`
 	ClosureSent       bool      `json:"closureSent"`

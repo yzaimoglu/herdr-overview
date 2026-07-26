@@ -27,10 +27,11 @@ func TestStateStoreRoundTrips(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := AgentRecord{
-		ThreadID:   "thread-1",
-		Status:     "working",
-		OutputHash: "abc",
-		LastSync:   time.Date(2026, time.July, 26, 12, 0, 0, 0, time.UTC),
+		ThreadID:      "thread-1",
+		Status:        "working",
+		OutputHash:    "abc",
+		StreamEnabled: true,
+		LastSync:      time.Date(2026, time.July, 26, 12, 0, 0, 0, time.UTC),
 	}
 	if err := store.Set("w3:p5", want); err != nil {
 		t.Fatal(err)
@@ -48,6 +49,17 @@ func TestStateStoreRoundTrips(t *testing.T) {
 		t.Fatal(err)
 	} else if info.Mode().Perm() != 0o600 {
 		t.Fatalf("state file mode is %o, want 600", info.Mode().Perm())
+	}
+
+	if err := os.WriteFile(path, []byte(`{"pane":{"threadId":"thread-1"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := NewStateStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record, ok := legacy.Get("pane"); !ok || record.StreamEnabled {
+		t.Fatalf("missing stream setting should default to false: ok=%v record=%+v", ok, record)
 	}
 }
 
