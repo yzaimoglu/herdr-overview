@@ -15,6 +15,7 @@ type AgentRecord struct {
 	ThreadID   string    `json:"threadId"`
 	Status     string    `json:"status"`
 	OutputHash string    `json:"outputHash"`
+	Output     string    `json:"output,omitempty"`
 	LastSync   time.Time `json:"lastSync"`
 	Closed     bool      `json:"closed"`
 }

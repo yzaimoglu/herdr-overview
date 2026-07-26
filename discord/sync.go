@@ -10,20 +10,26 @@ import (
 
 // Syncer reconciles Herdr panes with their Discord forum threads.
 type Syncer struct {
-	api     AgentAPI
-	discord DiscordClient
-	state   *StateStore
-	config  Config
-	now     func() time.Time
+	api         AgentAPI
+	discord     DiscordClient
+	state       *StateStore
+	config      Config
+	now         func() time.Time
+	reconcileMu sync.Mutex
+	locksMu     sync.Mutex
+	paneLocks   map[string]*sync.Mutex
 }
 
 // NewSyncer creates a synchronizer using the supplied API, Discord client, and state store.
 func NewSyncer(api AgentAPI, discord DiscordClient, state *StateStore, config Config) *Syncer {
-	return &Syncer{api: api, discord: discord, state: state, config: config, now: time.Now}
+	return &Syncer{api: api, discord: discord, state: state, config: config, now: time.Now, paneLocks: make(map[string]*sync.Mutex)}
 }
 
 // Reconcile mirrors one successful Herdr overview into Discord.
 func (s *Syncer) Reconcile(ctx context.Context) error {
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+
 	overview, err := s.api.Overview(ctx)
 	if err != nil {
 		return err
@@ -55,22 +61,10 @@ func (s *Syncer) Reconcile(ctx context.Context) error {
 		if _, ok := live[paneID]; ok || record.Closed || record.ThreadID == "" {
 			continue
 		}
-		if err := s.discord.SendMessage(ctx, record.ThreadID, fmt.Sprintf("Agent for pane `%s` is no longer available; closing this thread.", paneID)); err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("close pane %s: %w", paneID, err)
-			}
-			continue
-		}
-		if err := s.discord.ArchiveThread(ctx, record.ThreadID); err != nil {
+		if err := s.archivePane(ctx, paneID); err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("archive pane %s: %w", paneID, err)
 			}
-			continue
-		}
-		record.Closed = true
-		record.LastSync = s.now()
-		if err := s.state.Set(paneID, record); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("save closed pane %s: %w", paneID, err)
 		}
 	}
 
@@ -81,11 +75,15 @@ func (s *Syncer) Reconcile(ctx context.Context) error {
 }
 
 func (s *Syncer) syncAgentThread(ctx context.Context, agent Agent, previous AgentRecord, exists bool) error {
+	unlock := s.lockPane(agent.PaneID)
+	defer unlock()
+	previous, exists = s.state.Get(agent.PaneID)
+
 	thread, found, err := s.discord.FindThreadByPane(ctx, s.config.GuildID, agent.PaneID)
 	if err != nil {
 		return err
 	}
-	found = found && thread.ID != "" && !thread.Archived
+	found = found && thread.ID != "" && !thread.Archived && thread.ParentID == s.config.ForumChannelID
 
 	recreated := exists && previous.ThreadID != "" && !found
 	if !found {
@@ -123,8 +121,27 @@ func (s *Syncer) syncAgentThread(ctx context.Context, agent Agent, previous Agen
 	}
 	if exists {
 		record.OutputHash = previous.OutputHash
+		record.Output = previous.Output
 	}
 	return s.state.Set(agent.PaneID, record)
+}
+
+func (s *Syncer) archivePane(ctx context.Context, paneID string) error {
+	unlock := s.lockPane(paneID)
+	defer unlock()
+	record, ok := s.state.Get(paneID)
+	if !ok || record.Closed || record.ThreadID == "" {
+		return nil
+	}
+	if err := s.discord.SendMessage(ctx, record.ThreadID, fmt.Sprintf("Agent for pane `%s` is no longer available; closing this thread.", paneID)); err != nil {
+		return err
+	}
+	if err := s.discord.ArchiveThread(ctx, record.ThreadID); err != nil {
+		return err
+	}
+	record.Closed = true
+	record.LastSync = s.now()
+	return s.state.Set(paneID, record)
 }
 
 func initialMessage(agent Agent) string {
@@ -165,6 +182,9 @@ func (s *Syncer) syncOutputs(ctx context.Context, agents []Agent) error {
 
 // SyncAgentOutput polls and publishes only output whose normalized hash changed.
 func (s *Syncer) SyncAgentOutput(ctx context.Context, agent Agent) error {
+	unlock := s.lockPane(agent.PaneID)
+	defer unlock()
+
 	record, ok := s.state.Get(agent.PaneID)
 	if !ok || record.ThreadID == "" {
 		return fmt.Errorf("no Discord thread mapping for pane %s", agent.PaneID)
@@ -178,14 +198,30 @@ func (s *Syncer) SyncAgentOutput(ctx context.Context, agent Agent) error {
 	if hash == record.OutputHash {
 		return nil
 	}
-	if formatted := formatOutput(normalized); formatted != "" {
-		for _, chunk := range chunkMessage(formatted, maxDiscordPayload) {
-			if err := s.discord.SendMessage(ctx, record.ThreadID, chunk); err != nil {
+	if update, changed := outputUpdate(record.Output, normalized); changed && update != "" {
+		for _, chunk := range chunkMessage(update, maxDiscordPayload-fencedOutputOverhead) {
+			if err := s.discord.SendMessage(ctx, record.ThreadID, fencedOutput(chunk)); err != nil {
 				return err
 			}
 		}
 	}
 	record.OutputHash = hash
+	record.Output = normalized
 	record.LastSync = s.now()
 	return s.state.Set(agent.PaneID, record)
+}
+
+func (s *Syncer) lockPane(paneID string) func() {
+	s.locksMu.Lock()
+	if s.paneLocks == nil {
+		s.paneLocks = make(map[string]*sync.Mutex)
+	}
+	lock := s.paneLocks[paneID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.paneLocks[paneID] = lock
+	}
+	s.locksMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
 }

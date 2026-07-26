@@ -7,6 +7,8 @@ import (
 
 const maxDiscordPayload = 1900
 
+const fencedOutputOverhead = len("```\n") + len("\n```")
+
 func normalizeOutput(text string) string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
@@ -66,6 +68,10 @@ func formatOutput(text string) string {
 	if text == "" {
 		return ""
 	}
+	return fencedOutput(text)
+}
+
+func fencedOutput(text string) string {
 	return "```\n" + text + "\n```"
 }
 

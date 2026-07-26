@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -12,17 +13,27 @@ import (
 )
 
 type fakeAgentAPI struct {
-	mu          sync.Mutex
-	overview    Overview
-	overviewErr error
-	outputs     map[string]string
-	outputErr   error
-	outputCalls int
-	current     int
-	maxCurrent  int
+	mu              sync.Mutex
+	overview        Overview
+	overviewErr     error
+	outputs         map[string]string
+	outputErr       error
+	outputCalls     int
+	current         int
+	maxCurrent      int
+	outputStarted   chan struct{}
+	outputRelease   chan struct{}
+	outputOnce      sync.Once
+	overviewStarted chan struct{}
+	overviewRelease chan struct{}
+	overviewOnce    sync.Once
 }
 
 func (f *fakeAgentAPI) Overview(context.Context) (Overview, error) {
+	if f.overviewStarted != nil {
+		f.overviewOnce.Do(func() { close(f.overviewStarted) })
+		<-f.overviewRelease
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.overviewErr != nil {
@@ -44,6 +55,14 @@ func (f *fakeAgentAPI) Output(ctx context.Context, paneID string, _ int) (string
 		f.current--
 		f.mu.Unlock()
 	}()
+	if f.outputStarted != nil {
+		f.outputOnce.Do(func() { close(f.outputStarted) })
+		select {
+		case <-f.outputRelease:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
 	select {
 	case <-time.After(time.Millisecond):
 	case <-ctx.Done():
@@ -70,8 +89,10 @@ type fakeDiscordClient struct {
 		threadID string
 		content  string
 	}
-	archived []string
-	findErr  error
+	archived       []string
+	findErr        error
+	messageStarted chan struct{}
+	messageOnce    sync.Once
 }
 
 func (f *fakeDiscordClient) CreateForumThread(_ context.Context, _, _, name string) (Thread, error) {
@@ -100,6 +121,9 @@ func (f *fakeDiscordClient) FindThreadByPane(_ context.Context, _, paneID string
 }
 
 func (f *fakeDiscordClient) SendMessage(_ context.Context, threadID, content string) error {
+	if f.messageStarted != nil {
+		f.messageOnce.Do(func() { close(f.messageStarted) })
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.messages = append(f.messages, struct {
@@ -241,6 +265,111 @@ func TestSyncAgentOutputPreservesStateOnAPIFailure(t *testing.T) {
 	}
 	if got, _ := store.Get("pane"); got != want {
 		t.Fatalf("state changed after output failure: got=%+v want=%+v", got, want)
+	}
+}
+
+func TestSyncAgentOutputPublishesOnlyNewOutputSuffix(t *testing.T) {
+	previous := "line 1"
+	current := "line 1\nline 2"
+	store := testStore(t)
+	if err := store.Set("pane", AgentRecord{
+		ThreadID:   "thread-1",
+		OutputHash: fmt.Sprintf("%x", sha256.Sum256([]byte(normalizeOutput(previous)))),
+		Output:     previous,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeAgentAPI{outputs: map[string]string{"pane": current}}
+	discord := &fakeDiscordClient{}
+	syncer := NewSyncer(api, discord, store, testConfig())
+
+	if err := syncer.SyncAgentOutput(context.Background(), Agent{PaneID: "pane"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(discord.messages) != 1 || discord.messages[0].content != "```\nline 2\n```" {
+		t.Fatalf("unexpected suffix message: %+v", discord.messages)
+	}
+}
+
+func TestSyncAgentOutputUsesSelfContainedFencesForLongOutput(t *testing.T) {
+	store := testStore(t)
+	if err := store.Set("pane", AgentRecord{ThreadID: "thread-1"}); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeAgentAPI{outputs: map[string]string{"pane": strings.Repeat("x", 4000)}}
+	discord := &fakeDiscordClient{}
+	syncer := NewSyncer(api, discord, store, testConfig())
+
+	if err := syncer.SyncAgentOutput(context.Background(), Agent{PaneID: "pane"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(discord.messages) < 2 {
+		t.Fatalf("long output was not chunked: %d messages", len(discord.messages))
+	}
+	for i, message := range discord.messages {
+		if len([]rune(message.content)) > maxDiscordPayload {
+			t.Fatalf("message %d exceeds limit: %d", i, len([]rune(message.content)))
+		}
+		if !strings.HasPrefix(message.content, "```\n") || !strings.HasSuffix(message.content, "\n```") {
+			t.Fatalf("message %d is not self-contained fenced Markdown: %q", i, message.content)
+		}
+	}
+}
+
+func TestReconcileRejectsThreadFromAnotherForum(t *testing.T) {
+	api := &fakeAgentAPI{overview: Overview{Agents: []Agent{{PaneID: "pane", Name: "worker", Status: "idle"}}}}
+	discord := &fakeDiscordClient{found: map[string]Thread{"pane": {ID: "wrong-thread", ParentID: "other-forum"}}}
+	syncer := NewSyncer(api, discord, testStore(t), testConfig())
+
+	if err := syncer.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(discord.created) != 1 || discord.created[0].ID == "wrong-thread" {
+		t.Fatalf("wrong-parent thread was adopted: created=%+v", discord.created)
+	}
+}
+
+func TestConcurrentOutputAndReconcileDoNotClobberState(t *testing.T) {
+	api := &fakeAgentAPI{
+		overview:        Overview{Agents: []Agent{{PaneID: "pane", Name: "worker", Status: "idle"}}},
+		outputs:         map[string]string{"pane": "new output"},
+		outputStarted:   make(chan struct{}),
+		outputRelease:   make(chan struct{}),
+		overviewStarted: make(chan struct{}),
+		overviewRelease: make(chan struct{}),
+	}
+	discord := &fakeDiscordClient{
+		found:          map[string]Thread{"pane": {ID: "thread-1", ParentID: "forum"}},
+		messageStarted: make(chan struct{}),
+	}
+	store := testStore(t)
+	if err := store.Set("pane", AgentRecord{ThreadID: "thread-1", Status: "working", Output: "old output"}); err != nil {
+		t.Fatal(err)
+	}
+	syncer := NewSyncer(api, discord, store, testConfig())
+
+	outputDone := make(chan error, 1)
+	go func() { outputDone <- syncer.SyncAgentOutput(context.Background(), Agent{PaneID: "pane"}) }()
+	<-api.outputStarted
+	reconcileDone := make(chan error, 1)
+	go func() { reconcileDone <- syncer.Reconcile(context.Background()) }()
+	<-api.overviewStarted
+	close(api.overviewRelease)
+	select {
+	case <-discord.messageStarted:
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(api.outputRelease)
+	if err := <-outputDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-reconcileDone; err != nil {
+		t.Fatal(err)
+	}
+
+	record, _ := store.Get("pane")
+	if record.Status != "idle" || record.OutputHash == "" || record.Output != "new output" {
+		t.Fatalf("stale state won: %+v", record)
 	}
 }
 
