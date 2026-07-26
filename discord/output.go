@@ -24,30 +24,7 @@ func outputUpdate(previous, current string) (string, bool) {
 	if strings.HasPrefix(current, previous) {
 		return strings.TrimLeft(strings.TrimPrefix(current, previous), "\r\n"), true
 	}
-	if update, ok := rollingUpdate(previous, current); ok {
-		return update, true
-	}
-	return current, true
-}
-
-func rollingUpdate(previous, current string) (string, bool) {
-	previousLines := strings.Split(previous, "\n")
-	currentLines := strings.Split(current, "\n")
-	for count := min(len(previousLines), len(currentLines)); count > 0; count-- {
-		start := len(previousLines) - count
-		match := true
-		for i := 0; i < count; i++ {
-			if previousLines[start+i] != currentLines[i] {
-				match = false
-				break
-			}
-		}
-		if match {
-			overlap := strings.Join(currentLines[:count], "\n")
-			return strings.TrimLeft(strings.TrimPrefix(current, overlap), "\r\n"), true
-		}
-	}
-	return "", false
+	return "", true
 }
 
 func chunkMessage(text string, limit int) []string {

@@ -17,14 +17,14 @@ func TestOutputUpdateDetectsUnchangedAndReplacedOutput(t *testing.T) {
 	if update, changed := outputUpdate("same\n", "same\r\n"); changed || update != "" {
 		t.Fatalf("expected normalized output to be unchanged: changed=%v update=%q", changed, update)
 	}
-	if update, changed := outputUpdate("old output", "new output"); !changed || update != "new output" {
-		t.Fatalf("expected rolling snapshot: changed=%v update=%q", changed, update)
+	if update, changed := outputUpdate("old output", "new output"); !changed || update != "" {
+		t.Fatalf("expected rolling snapshot to be suppressed: changed=%v update=%q", changed, update)
 	}
 }
 
-func TestOutputUpdateUsesNewSuffixAfterRollingWindow(t *testing.T) {
+func TestOutputUpdateSuppressesRollingWindow(t *testing.T) {
 	update, changed := outputUpdate("line 1\nline 2\nline 3", "line 2\nline 3\nline 4")
-	if !changed || update != "line 4" {
+	if !changed || update != "" {
 		t.Fatalf("unexpected rolling update: changed=%v update=%q", changed, update)
 	}
 }

@@ -395,8 +395,8 @@ func TestSyncAgentOutputSuppressesRepeatedEmittedUpdate(t *testing.T) {
 	if err := syncer.SyncAgentOutput(context.Background(), Agent{PaneID: "pane"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(discord.messages) != 1 {
-		t.Fatalf("sent %d repeated updates: %+v", len(discord.messages), discord.messages)
+	if len(discord.messages) != 0 {
+		t.Fatalf("sent rolling updates: %+v", discord.messages)
 	}
 }
 
