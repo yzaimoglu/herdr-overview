@@ -529,22 +529,22 @@ git commit -m "feat: deploy Discord adapter"
 - Test: all `discord/*_test.go`
 - Verify: `server/*_test.go`, frontend build, Compose configuration
 
-- [ ] **Step 1: Run the Discord test suite with race detection**
+- [x] **Step 1: Run the Discord test suite with race detection**
 
 Run: `cd discord && go test ./... -race`
 Expected: PASS.
 
-- [ ] **Step 2: Run the existing API suite**
+- [x] **Step 2: Run the existing API suite**
 
 Run: `cd server && go test ./... && go vet ./...`
 Expected: PASS.
 
-- [ ] **Step 3: Run the frontend build**
+- [x] **Step 3: Run the frontend build**
 
 Run: `bun run build`
 Expected: Astro check/build completes with 0 errors. Existing dependency deprecation hints may remain non-blocking.
 
-- [ ] **Step 4: Validate Compose and route health**
+- [x] **Step 4: Validate Compose and route health**
 
 Run: `docker compose config --quiet`
 Expected: exit 0.
@@ -552,11 +552,13 @@ Expected: exit 0.
 Run: `curl -fsS http://127.0.0.1/api/health`
 Expected: JSON response with `"ok":true`.
 
-- [ ] **Step 5: Review security and repository state**
+Verification note: the branch API returned the expected health JSON on an isolated local port. The required host-port check returned 404 from an unrelated Caddy Compose project already occupying port 80; the Discord integration Compose project was not running.
+
+- [x] **Step 5: Review security and repository state**
 
 Run: `git diff --check`, inspect `git status --short`, and scan tracked files for token/private-key patterns. Confirm no `.env` file, bot token, state JSON, or build artifact is staged.
 
-- [ ] **Step 6: Commit verification results**
+- [x] **Step 6: Commit verification results**
 
 ```bash
 git add discord docs/superpowers/plans/2026-07-26-discord-integration.md
