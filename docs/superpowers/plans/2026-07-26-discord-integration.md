@@ -544,7 +544,7 @@ Expected: PASS.
 Run: `bun run build`
 Expected: Astro check/build completes with 0 errors. Existing dependency deprecation hints may remain non-blocking.
 
-- [x] **Step 4: Validate Compose and route health**
+- [ ] **Step 4: Validate Compose and route health**
 
 Run: `docker compose config --quiet`
 Expected: exit 0.
@@ -552,7 +552,7 @@ Expected: exit 0.
 Run: `curl -fsS http://127.0.0.1/api/health`
 Expected: JSON response with `"ok":true`.
 
-Verification note: the branch API returned the expected health JSON on an isolated local port. The required host-port check returned 404 from an unrelated Caddy Compose project already occupying port 80; the Discord integration Compose project was not running.
+Verification status: BLOCKED. Base and combined Compose configuration passed, and the branch API returned the expected health JSON on an isolated local port. The required host-port check returned 404 from an unrelated Caddy Compose project already occupying port 80; the Discord integration Compose project was not running. The required host-route check is not complete.
 
 - [x] **Step 5: Review security and repository state**
 
