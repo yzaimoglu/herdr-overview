@@ -35,6 +35,9 @@ func (a *HTTPAgentAPI) Overview(ctx context.Context) (Overview, error) {
 	if err := a.do(ctx, http.MethodGet, "/api/overview", nil, &overview); err != nil {
 		return Overview{}, err
 	}
+	if overview.isFallback() {
+		return Overview{}, fmt.Errorf("overview API returned fallback data")
+	}
 	return overview, nil
 }
 

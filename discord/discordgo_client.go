@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -34,7 +35,7 @@ func (c *DiscordgoClient) CreateForumThread(ctx context.Context, guildID, forumI
 	channel, err := c.session.ForumThreadStartComplex(forumID, &discordgo.ThreadStart{
 		Name: canonicalThreadName(name),
 		Type: discordgo.ChannelTypeGuildPublicThread,
-	}, &discordgo.MessageSend{Content: "Thread created."})
+	}, &discordgo.MessageSend{Content: "Thread created.", AllowedMentions: emptyAllowedMentions()}, discordgo.WithContext(ctx))
 	if err != nil {
 		return Thread{}, fmt.Errorf("create forum thread in guild %s: %w", guildID, err)
 	}
@@ -48,28 +49,80 @@ func (c *DiscordgoClient) FindThreadByPane(ctx context.Context, guildID, paneID 
 	if err := contextError(ctx); err != nil {
 		return Thread{}, false, err
 	}
-	threads, err := c.session.GuildThreadsActive(guildID)
+	threads, err := c.session.GuildThreadsActive(guildID, discordgo.WithContext(ctx))
 	if err != nil {
 		return Thread{}, false, fmt.Errorf("list active Discord threads: %w", err)
 	}
-	if threads == nil {
-		return Thread{}, false, nil
+	if thread, found := findAdapterThread(threads, c.config.ForumChannelID, paneID); found {
+		return thread, true, nil
 	}
-	for _, channel := range threads.Threads {
-		if channel == nil || channel.ParentID != c.config.ForumChannelID || channel.Name != adapterThreadName(paneID) {
-			continue
+	var before *time.Time
+	for {
+		archived, err := c.session.ThreadsArchived(c.config.ForumChannelID, before, 100, discordgo.WithContext(ctx))
+		if err != nil {
+			return Thread{}, false, fmt.Errorf("list archived Discord threads: %w", err)
 		}
-		return threadFromChannel(channel), true, nil
+		if thread, found := findAdapterThread(archived, c.config.ForumChannelID, paneID); found {
+			return thread, true, nil
+		}
+		if archived == nil || !archived.HasMore {
+			break
+		}
+		nextBefore, ok := oldestArchiveTimestamp(archived.Threads)
+		if !ok || before != nil && !nextBefore.Before(*before) {
+			break
+		}
+		before = &nextBefore
 	}
 	return Thread{}, false, contextError(ctx)
+}
+
+func findAdapterThread(threads *discordgo.ThreadsList, forumID, paneID string) (Thread, bool) {
+	if threads == nil {
+		return Thread{}, false
+	}
+	for _, channel := range threads.Threads {
+		if channel != nil && channel.ParentID == forumID && channel.Name == adapterThreadName(paneID) {
+			return threadFromChannel(channel), true
+		}
+	}
+	return Thread{}, false
+}
+
+func oldestArchiveTimestamp(channels []*discordgo.Channel) (time.Time, bool) {
+	var oldest time.Time
+	for _, channel := range channels {
+		if channel == nil || channel.ThreadMetadata == nil || channel.ThreadMetadata.ArchiveTimestamp.IsZero() {
+			continue
+		}
+		if oldest.IsZero() || channel.ThreadMetadata.ArchiveTimestamp.Before(oldest) {
+			oldest = channel.ThreadMetadata.ArchiveTimestamp
+		}
+	}
+	return oldest, !oldest.IsZero()
 }
 
 func (c *DiscordgoClient) SendMessage(ctx context.Context, threadID, content string) error {
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	if _, err := c.session.ChannelMessageSend(threadID, content); err != nil {
+	if _, err := c.session.ChannelMessageSendComplex(threadID, &discordgo.MessageSend{
+		Content:         content,
+		AllowedMentions: emptyAllowedMentions(),
+	}, discordgo.WithContext(ctx)); err != nil {
 		return fmt.Errorf("send Discord message: %w", err)
+	}
+	return contextError(ctx)
+}
+
+// UnarchiveThread makes an archived adapter-owned thread available for reuse.
+func (c *DiscordgoClient) UnarchiveThread(ctx context.Context, threadID string) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	archived := false
+	if _, err := c.session.ChannelEdit(threadID, &discordgo.ChannelEdit{Archived: &archived}, discordgo.WithContext(ctx)); err != nil {
+		return fmt.Errorf("unarchive Discord thread: %w", err)
 	}
 	return contextError(ctx)
 }
@@ -79,7 +132,7 @@ func (c *DiscordgoClient) ArchiveThread(ctx context.Context, threadID string) er
 		return err
 	}
 	archived := true
-	if _, err := c.session.ChannelEdit(threadID, &discordgo.ChannelEdit{Archived: &archived}); err != nil {
+	if _, err := c.session.ChannelEdit(threadID, &discordgo.ChannelEdit{Archived: &archived}, discordgo.WithContext(ctx)); err != nil {
 		return fmt.Errorf("archive Discord thread: %w", err)
 	}
 	return contextError(ctx)
@@ -104,7 +157,7 @@ func (c *DiscordgoClient) handleMessage(ctx context.Context, session *discordgo.
 	if _, ok := c.config.AllowedUserIDs[event.Author.ID]; !ok {
 		return nil
 	}
-	channel, err := session.Channel(event.ChannelID)
+	channel, err := session.Channel(event.ChannelID, discordgo.WithContext(ctx))
 	if err != nil {
 		return fmt.Errorf("lookup Discord channel: %w", err)
 	}
@@ -152,6 +205,10 @@ func threadFromChannel(channel *discordgo.Channel) Thread {
 	thread.Name = channel.Name
 	thread.Archived = channel.ThreadMetadata != nil && channel.ThreadMetadata.Archived
 	return thread
+}
+
+func emptyAllowedMentions() *discordgo.MessageAllowedMentions {
+	return &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}
 }
 
 func adapterThreadName(paneID string) string {

@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -114,7 +116,8 @@ func (f *handlerDiscordClient) SendMessage(_ context.Context, _, content string)
 	return f.err
 }
 
-func (*handlerDiscordClient) ArchiveThread(context.Context, string) error { return nil }
+func (*handlerDiscordClient) ArchiveThread(context.Context, string) error   { return nil }
+func (*handlerDiscordClient) UnarchiveThread(context.Context, string) error { return nil }
 
 func TestParseMessageRecognizesOnlyExactControlCommands(t *testing.T) {
 	tests := []struct {
@@ -305,10 +308,15 @@ func TestBotRunReconcilesImmediatelyAndClosesOnCancellation(t *testing.T) {
 }
 
 func TestMessageHandlerUsesRunContext(t *testing.T) {
-	client := testDiscordgoClient(t, func(*http.Request) (*http.Response, error) {
+	type contextKey struct{}
+	ctx := context.WithValue(context.Background(), contextKey{}, "message-context")
+	client := testDiscordgoClient(t, func(request *http.Request) (*http.Response, error) {
+		if got := request.Context().Value(contextKey{}); got != "message-context" {
+			t.Errorf("message lookup lost context value: %v", got)
+		}
 		return discordResponse(`{"id":"thread-1","guild_id":"guild","parent_id":"forum","type":11}`), nil
 	})
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var got context.Context
 	wantErr := errors.New("handler failed with private prompt")
@@ -342,6 +350,45 @@ func TestFindThreadByPaneUsesExactAdapterNameAndForumParent(t *testing.T) {
 	}
 }
 
+func TestFindThreadByPaneSearchesArchivedThreads(t *testing.T) {
+	client := testDiscordgoClient(t, func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/api/v9/guilds/guild/threads/active":
+			return discordResponse(`{"threads":[]}`), nil
+		case "/api/v9/channels/forum/threads/archived/public":
+			return discordResponse(`{"threads":[{"id":"archived","name":"Herdr agent [pane-1]","parent_id":"forum","type":11,"thread_metadata":{"archived":true}}]}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected Discord path %s", request.URL.Path)
+		}
+	})
+
+	thread, found, err := client.FindThreadByPane(context.Background(), "guild", "pane-1")
+	if err != nil || !found || thread.ID != "archived" || !thread.Archived {
+		t.Fatalf("FindThreadByPane() = %+v, %v, %v", thread, found, err)
+	}
+}
+
+func TestFindThreadByPanePaginatesArchivedThreads(t *testing.T) {
+	client := testDiscordgoClient(t, func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/api/v9/guilds/guild/threads/active":
+			return discordResponse(`{"threads":[]}`), nil
+		case "/api/v9/channels/forum/threads/archived/public":
+			if request.URL.Query().Get("before") == "" {
+				return discordResponse(`{"has_more":true,"threads":[{"id":"older","name":"not this pane","parent_id":"forum","type":11,"thread_metadata":{"archived":true,"archive_timestamp":"2026-07-26T12:00:00Z"}}]}`), nil
+			}
+			return discordResponse(`{"threads":[{"id":"archived","name":"Herdr agent [pane-1]","parent_id":"forum","type":11,"thread_metadata":{"archived":true}}]}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected Discord path %s", request.URL.Path)
+		}
+	})
+
+	thread, found, err := client.FindThreadByPane(context.Background(), "guild", "pane-1")
+	if err != nil || !found || thread.ID != "archived" {
+		t.Fatalf("FindThreadByPane() = %+v, %v, %v", thread, found, err)
+	}
+}
+
 func TestCreateForumThreadUsesCanonicalAdapterName(t *testing.T) {
 	var requestBody string
 	client := testDiscordgoClient(t, func(request *http.Request) (*http.Response, error) {
@@ -358,6 +405,89 @@ func TestCreateForumThreadUsesCanonicalAdapterName(t *testing.T) {
 	}
 	if !strings.Contains(requestBody, `"name":"Herdr agent [pane-1]"`) {
 		t.Fatalf("request used non-canonical thread name: %s", requestBody)
+	}
+}
+
+func TestDiscordGeneratedMessagesDisableMentions(t *testing.T) {
+	var requests []string
+	client := testDiscordgoClient(t, func(request *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		requests = append(requests, string(body))
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/threads") {
+			return discordResponse(`{"id":"thread-1","name":"Herdr agent [pane-1]","parent_id":"forum","type":11}`), nil
+		}
+		return discordResponse(`{"id":"message-1"}`), nil
+	})
+
+	if _, err := client.CreateForumThread(context.Background(), "guild", "forum", "worker [pane-1]"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendMessage(context.Background(), "thread-1", "@everyone"); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("got %d Discord message requests, want 2", len(requests))
+	}
+	for _, body := range requests {
+		var payload struct {
+			AllowedMentions *discordgo.MessageAllowedMentions `json:"allowed_mentions"`
+			Message         struct {
+				AllowedMentions *discordgo.MessageAllowedMentions `json:"allowed_mentions"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(body), &payload); err != nil {
+			t.Fatalf("decode Discord payload %q: %v", body, err)
+		}
+		mentions := payload.AllowedMentions
+		if mentions == nil {
+			mentions = payload.Message.AllowedMentions
+		}
+		if mentions == nil || len(mentions.Parse) != 0 || len(mentions.Roles) != 0 || len(mentions.Users) != 0 || mentions.RepliedUser {
+			t.Fatalf("unsafe allowed mentions in payload: %s", body)
+		}
+	}
+}
+
+func TestDiscordRESTRequestsUsePassedContext(t *testing.T) {
+	type contextKey struct{}
+	ctx := context.WithValue(context.Background(), contextKey{}, "request-context")
+	client := testDiscordgoClient(t, func(request *http.Request) (*http.Response, error) {
+		if got := request.Context().Value(contextKey{}); got != "request-context" {
+			return nil, fmt.Errorf("missing request context value: %v", got)
+		}
+		switch request.URL.Path {
+		case "/api/v9/guilds/guild/threads/active":
+			return discordResponse(`{"threads":[]}`), nil
+		case "/api/v9/channels/forum/threads/archived/public":
+			return discordResponse(`{"threads":[]}`), nil
+		case "/api/v9/channels/forum/threads":
+			return discordResponse(`{"id":"thread-1","parent_id":"forum","type":11}`), nil
+		case "/api/v9/channels/thread-1/messages":
+			return discordResponse(`{"id":"message-1"}`), nil
+		case "/api/v9/channels/thread-1":
+			return discordResponse(`{}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected Discord path %s", request.URL.Path)
+		}
+	})
+
+	if _, err := client.CreateForumThread(ctx, "guild", "forum", "worker [pane-1]"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.FindThreadByPane(ctx, "guild", "pane-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendMessage(ctx, "thread-1", "message"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.ArchiveThread(ctx, "thread-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.UnarchiveThread(ctx, "thread-1"); err != nil {
+		t.Fatal(err)
 	}
 }
 

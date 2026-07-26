@@ -90,6 +90,7 @@ type fakeDiscordClient struct {
 		content  string
 	}
 	archived       []string
+	unarchived     []string
 	findErr        error
 	messageStarted chan struct{}
 	messageOnce    sync.Once
@@ -137,6 +138,13 @@ func (f *fakeDiscordClient) ArchiveThread(_ context.Context, threadID string) er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.archived = append(f.archived, threadID)
+	return nil
+}
+
+func (f *fakeDiscordClient) UnarchiveThread(_ context.Context, threadID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unarchived = append(f.unarchived, threadID)
 	return nil
 }
 
@@ -219,6 +227,26 @@ func TestReconcileArchivesOnlyAfterSuccessfulOverview(t *testing.T) {
 	}
 }
 
+func TestReconcileRejectsFallbackOverviewBeforeDiscordChanges(t *testing.T) {
+	api := &fakeAgentAPI{overview: Overview{Source: "demo", HerdrAvailable: boolPointer(false)}}
+	discord := &fakeDiscordClient{}
+	store := testStore(t)
+	if err := store.Set("gone", AgentRecord{ThreadID: "thread-gone", Status: "working"}); err != nil {
+		t.Fatal(err)
+	}
+	syncer := NewSyncer(api, discord, store, testConfig())
+
+	if err := syncer.Reconcile(context.Background()); err == nil || !strings.Contains(err.Error(), "fallback") {
+		t.Fatalf("expected fallback overview error, got %v", err)
+	}
+	if len(discord.created) != 0 || len(discord.messages) != 0 || len(discord.archived) != 0 {
+		t.Fatalf("fallback overview changed Discord: created=%v messages=%v archived=%v", discord.created, discord.messages, discord.archived)
+	}
+	if record, ok := store.Get("gone"); !ok || record.Closed {
+		t.Fatalf("fallback overview changed state: ok=%v record=%+v", ok, record)
+	}
+}
+
 func TestReconcileRecoversDeletedThread(t *testing.T) {
 	api := &fakeAgentAPI{overview: Overview{Agents: []Agent{{PaneID: "pane", Name: "worker", Status: "idle"}}}}
 	discord := &fakeDiscordClient{found: map[string]Thread{"pane": {ID: "deleted-thread", ParentID: "forum"}}}
@@ -247,6 +275,25 @@ func TestReconcileRecoversDeletedThread(t *testing.T) {
 	}
 	if !recreated {
 		t.Fatalf("replacement lifecycle message missing: %+v", discord.messages)
+	}
+}
+
+func TestReconcileReusesArchivedAdapterThread(t *testing.T) {
+	api := &fakeAgentAPI{overview: Overview{Agents: []Agent{{PaneID: "pane", Name: "worker", Status: "idle"}}}}
+	discord := &fakeDiscordClient{found: map[string]Thread{"pane": {ID: "archived-thread", ParentID: "forum", Archived: true}}}
+	syncer := NewSyncer(api, discord, testStore(t), testConfig())
+
+	if err := syncer.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(discord.created) != 0 {
+		t.Fatalf("created replacement for archived adapter thread: %v", discord.created)
+	}
+	if len(discord.unarchived) != 1 || discord.unarchived[0] != "archived-thread" {
+		t.Fatalf("archived thread was not recovered: %v", discord.unarchived)
+	}
+	if record, ok := syncer.state.Get("pane"); !ok || record.ThreadID != "archived-thread" {
+		t.Fatalf("archived thread mapping was not reused: ok=%v record=%+v", ok, record)
 	}
 }
 
@@ -394,4 +441,8 @@ func TestReconcileBoundsConcurrentOutputRequests(t *testing.T) {
 func storeRecordClosed(store *StateStore, paneID string) bool {
 	record, ok := store.Get(paneID)
 	return ok && record.Closed
+}
+
+func boolPointer(value bool) *bool {
+	return &value
 }

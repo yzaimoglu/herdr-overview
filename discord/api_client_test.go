@@ -17,7 +17,7 @@ func TestHTTPAgentAPIOverviewDecodesAgents(t *testing.T) {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"agents":[{"name":"builder","paneId":"w3:p5","status":"working"}]}`)
+		_, _ = io.WriteString(w, `{"source":"live","herdrAvailable":true,"agents":[{"name":"builder","paneId":"w3:p5","status":"working"}]}`)
 	}))
 	defer server.Close()
 
@@ -31,6 +31,19 @@ func TestHTTPAgentAPIOverviewDecodesAgents(t *testing.T) {
 	}
 	if client.client.Timeout != 10*time.Second {
 		t.Fatalf("unexpected client timeout: %s", client.client.Timeout)
+	}
+}
+
+func TestHTTPAgentAPIRejectsFallbackOverview(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"source":"demo","herdrAvailable":false,"agents":[{"name":"demo","paneId":"demo-pane"}]}`)
+	}))
+	defer server.Close()
+
+	client := NewHTTPAgentAPI(server.URL, server.Client())
+	if _, err := client.Overview(context.Background()); err == nil || !strings.Contains(err.Error(), "fallback") {
+		t.Fatalf("expected fallback overview error, got %v", err)
 	}
 }
 

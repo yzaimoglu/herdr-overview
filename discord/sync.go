@@ -34,6 +34,9 @@ func (s *Syncer) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if overview.isFallback() {
+		return fmt.Errorf("overview API returned fallback data")
+	}
 
 	records := s.state.Records()
 	live := make(map[string]struct{}, len(overview.Agents))
@@ -83,7 +86,13 @@ func (s *Syncer) syncAgentThread(ctx context.Context, agent Agent, previous Agen
 	if err != nil {
 		return err
 	}
-	found = found && thread.ID != "" && !thread.Archived && thread.ParentID == s.config.ForumChannelID
+	found = found && thread.ID != "" && thread.ParentID == s.config.ForumChannelID
+	if found && thread.Archived {
+		if err := s.discord.UnarchiveThread(ctx, thread.ID); err != nil {
+			return err
+		}
+		thread.Archived = false
+	}
 
 	recreated := exists && previous.ThreadID != "" && !found
 	if !found {

@@ -16,5 +16,6 @@ type DiscordClient interface {
 	CreateForumThread(context.Context, string, string, string) (Thread, error)
 	FindThreadByPane(context.Context, string, string) (Thread, bool, error)
 	SendMessage(context.Context, string, string) error
+	UnarchiveThread(context.Context, string) error
 	ArchiveThread(context.Context, string) error
 }

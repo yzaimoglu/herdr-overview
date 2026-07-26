@@ -1,5 +1,7 @@
 package main
 
+import "strings"
+
 // Agent describes a Herdr agent returned by the overview API.
 type Agent struct {
 	Name        string `json:"name"`
@@ -15,7 +17,13 @@ type Agent struct {
 
 // Overview contains the current Herdr agents.
 type Overview struct {
-	Agents []Agent `json:"agents"`
+	Source         string  `json:"source"`
+	HerdrAvailable *bool   `json:"herdrAvailable"`
+	Agents         []Agent `json:"agents"`
+}
+
+func (o Overview) isFallback() bool {
+	return strings.EqualFold(strings.TrimSpace(o.Source), "demo") || o.HerdrAvailable != nil && !*o.HerdrAvailable
 }
 
 // Thread identifies a Discord forum thread associated with an agent.
