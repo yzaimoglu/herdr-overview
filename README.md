@@ -54,6 +54,14 @@ DISCORD_ALLOWED_USER_IDS=<user-id>,<another-user-id>
 
 `HERDR_OVERVIEW_API_URL` defaults to `http://overview-api:8787`, `DISCORD_SYNC_INTERVAL` defaults to `10s`, and `DISCORD_STATE_PATH` defaults to `/data/discord-state.json`. The `discord-state` named volume stores the thread mappings and synchronization state at `/data`, so `docker compose -f docker-compose.yml -f docker-compose.discord.yml down` and container recreation preserve it. Use the same command with `-v` only when intentionally discarding that state.
 
+### Discord output streaming
+
+- `/stream on` enables output messages for the current thread.
+- `/stream off` disables output messages for the current thread.
+- Streaming is off by default and the setting persists per agent.
+- Enabling streaming starts from the current output and does not replay history.
+- Lifecycle/status messages and prompt acknowledgements still appear while output streaming is off.
+
 ### Discord smoke test
 
 1. Start the base services and Discord adapter with the required Discord variables: `docker compose -f docker-compose.yml -f docker-compose.discord.yml up --build`.
