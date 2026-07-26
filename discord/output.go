@@ -24,6 +24,17 @@ func outputUpdate(previous, current string) (string, bool) {
 	if strings.HasPrefix(current, previous) {
 		return strings.TrimLeft(strings.TrimPrefix(current, previous), "\r\n"), true
 	}
+	previousLines := strings.Split(previous, "\n")
+	currentLines := strings.Split(current, "\n")
+	for overlap := min(len(previousLines), len(currentLines)); overlap > 0; overlap-- {
+		if strings.Join(previousLines[len(previousLines)-overlap:], "\n") == strings.Join(currentLines[:overlap], "\n") {
+			update := strings.Join(currentLines[overlap:], "\n")
+			if update != "" && previous != update && !strings.HasSuffix(previous, "\n"+update) {
+				return update, true
+			}
+			return "", true
+		}
+	}
 	return "", true
 }
 

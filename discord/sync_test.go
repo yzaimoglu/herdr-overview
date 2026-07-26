@@ -468,7 +468,7 @@ func TestSyncAgentOutputDoesNotSendUnchangedStreamOutput(t *testing.T) {
 	}
 }
 
-func TestSyncAgentOutputSuppressesRollingStreamReplacementAndAdvancesCursor(t *testing.T) {
+func TestSyncAgentOutputStreamsNewSuffixFromRollingWindow(t *testing.T) {
 	previous := "line 1\nline 2\nline 3"
 	current := "line 2\nline 3\nline 4"
 	store := testStore(t)
@@ -484,8 +484,8 @@ func TestSyncAgentOutputSuppressesRollingStreamReplacementAndAdvancesCursor(t *t
 	if err := NewSyncer(&fakeAgentAPI{outputs: map[string]string{"pane": current}}, discord, store, testConfig()).SyncAgentOutput(context.Background(), Agent{PaneID: "pane"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(discord.messages) != 0 {
-		t.Fatalf("sent rolling replacement: %+v", discord.messages)
+	if len(discord.messages) != 1 || discord.messages[0].content != "```\nline 4\n```" {
+		t.Fatalf("unexpected rolling suffix: %+v", discord.messages)
 	}
 	if got, _ := store.Get("pane"); got.Output != current || got.OutputHash != outputHash(current) {
 		t.Fatalf("rolling replacement did not advance cursor: %+v", got)
@@ -539,7 +539,7 @@ func TestSyncAgentOutputPublishesOnlyNewOutputSuffix(t *testing.T) {
 	}
 }
 
-func TestSyncAgentOutputSuppressesRepeatedRollingUpdates(t *testing.T) {
+func TestSyncAgentOutputSuppressesRepeatedRollingSuffix(t *testing.T) {
 	previous := "line 1\nline 2\nline 3"
 	first := "line 2\nline 3\nline 4"
 	second := "line 3\nline 4\nline 4"
@@ -562,8 +562,8 @@ func TestSyncAgentOutputSuppressesRepeatedRollingUpdates(t *testing.T) {
 	if err := syncer.SyncAgentOutput(context.Background(), Agent{PaneID: "pane"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(discord.messages) != 0 {
-		t.Fatalf("sent rolling updates: %+v", discord.messages)
+	if len(discord.messages) != 1 || discord.messages[0].content != "```\nline 4\n```" {
+		t.Fatalf("unexpected rolling updates: %+v", discord.messages)
 	}
 }
 

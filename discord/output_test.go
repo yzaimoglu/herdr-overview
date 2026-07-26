@@ -24,7 +24,7 @@ func TestOutputUpdateDetectsUnchangedAndReplacedOutput(t *testing.T) {
 
 func TestOutputUpdateSuppressesRollingWindow(t *testing.T) {
 	update, changed := outputUpdate("line 1\nline 2\nline 3", "line 2\nline 3\nline 4")
-	if !changed || update != "" {
+	if !changed || update != "line 4" {
 		t.Fatalf("unexpected rolling update: changed=%v update=%q", changed, update)
 	}
 }
