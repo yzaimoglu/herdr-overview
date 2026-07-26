@@ -106,6 +106,7 @@ type fakeDiscordClient struct {
 	findErr        error
 	messageStarted chan struct{}
 	messageOnce    sync.Once
+	messageErr     error
 }
 
 func (f *fakeDiscordClient) CreateForumThread(_ context.Context, _, _, name string) (Thread, error) {
@@ -143,7 +144,7 @@ func (f *fakeDiscordClient) SendMessage(_ context.Context, threadID, content str
 		threadID string
 		content  string
 	}{threadID, content})
-	return nil
+	return f.messageErr
 }
 
 func (f *fakeDiscordClient) ArchiveThread(_ context.Context, threadID string) error {
@@ -231,7 +232,11 @@ func TestReconcilePreservesStreamEnabledAfterStateReload(t *testing.T) {
 func TestReconcilePublishesStatusAndDeduplicatesOutput(t *testing.T) {
 	api := &fakeAgentAPI{overview: Overview{Agents: []Agent{{PaneID: "pane", Name: "worker", Status: "working"}}}, outputs: map[string]string{"pane": "same output"}}
 	discord := &fakeDiscordClient{}
-	syncer := NewSyncer(api, discord, testStore(t), testConfig())
+	store := testStore(t)
+	if err := store.Set("pane", AgentRecord{StreamEnabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	syncer := NewSyncer(api, discord, store, testConfig())
 
 	if err := syncer.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
@@ -394,14 +399,131 @@ func TestSyncAgentOutputPreservesStateOnAPIFailure(t *testing.T) {
 	}
 }
 
+func TestSyncAgentOutputDoesNotSendWhenStreamDisabled(t *testing.T) {
+	store := testStore(t)
+	if err := store.Set("pane", AgentRecord{
+		ThreadID:      "thread-1",
+		Output:        "old output",
+		OutputHash:    "previous-output-hash",
+		StreamEnabled: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeAgentAPI{outputs: map[string]string{"pane": "old output\nnew output"}}
+	discord := &fakeDiscordClient{}
+	if err := NewSyncer(api, discord, store, testConfig()).SyncAgentOutput(context.Background(), Agent{PaneID: "pane"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(discord.messages) != 0 {
+		t.Fatalf("sent output while disabled: %+v", discord.messages)
+	}
+	if got, _ := store.Get("pane"); got.Output != "old output\nnew output" {
+		t.Fatalf("cursor was not advanced: %+v", got)
+	}
+}
+
+func TestSyncAgentOutputStreamsAppendOnlySuffix(t *testing.T) {
+	previous := "line 1"
+	store := testStore(t)
+	if err := store.Set("pane", AgentRecord{
+		ThreadID:      "thread-1",
+		OutputHash:    outputHash(previous),
+		Output:        previous,
+		StreamEnabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeAgentAPI{outputs: map[string]string{"pane": previous + "\nline 2"}}
+	discord := &fakeDiscordClient{}
+	if err := NewSyncer(api, discord, store, testConfig()).SyncAgentOutput(context.Background(), Agent{PaneID: "pane"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(discord.messages) != 1 || discord.messages[0].content != "```\nline 2\n```" {
+		t.Fatalf("unexpected suffix message: %+v", discord.messages)
+	}
+}
+
+func TestSyncAgentOutputDoesNotSendUnchangedStreamOutput(t *testing.T) {
+	previous := "same output"
+	want := AgentRecord{
+		ThreadID:      "thread-1",
+		OutputHash:    outputHash(previous),
+		Output:        previous,
+		StreamEnabled: true,
+		LastSync:      time.Unix(1, 0),
+	}
+	store := testStore(t)
+	if err := store.Set("pane", want); err != nil {
+		t.Fatal(err)
+	}
+	discord := &fakeDiscordClient{}
+	if err := NewSyncer(&fakeAgentAPI{outputs: map[string]string{"pane": previous}}, discord, store, testConfig()).SyncAgentOutput(context.Background(), Agent{PaneID: "pane"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(discord.messages) != 0 {
+		t.Fatalf("sent unchanged output: %+v", discord.messages)
+	}
+	if got, _ := store.Get("pane"); got != want {
+		t.Fatalf("unchanged output rewrote state: got=%+v want=%+v", got, want)
+	}
+}
+
+func TestSyncAgentOutputSuppressesRollingStreamReplacementAndAdvancesCursor(t *testing.T) {
+	previous := "line 1\nline 2\nline 3"
+	current := "line 2\nline 3\nline 4"
+	store := testStore(t)
+	if err := store.Set("pane", AgentRecord{
+		ThreadID:      "thread-1",
+		OutputHash:    outputHash(previous),
+		Output:        previous,
+		StreamEnabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	discord := &fakeDiscordClient{}
+	if err := NewSyncer(&fakeAgentAPI{outputs: map[string]string{"pane": current}}, discord, store, testConfig()).SyncAgentOutput(context.Background(), Agent{PaneID: "pane"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(discord.messages) != 0 {
+		t.Fatalf("sent rolling replacement: %+v", discord.messages)
+	}
+	if got, _ := store.Get("pane"); got.Output != current || got.OutputHash != outputHash(current) {
+		t.Fatalf("rolling replacement did not advance cursor: %+v", got)
+	}
+}
+
+func TestSyncAgentOutputPreservesCursorWhenDiscordSendFails(t *testing.T) {
+	previous := "line 1"
+	want := AgentRecord{
+		ThreadID:      "thread-1",
+		OutputHash:    outputHash(previous),
+		Output:        previous,
+		StreamEnabled: true,
+	}
+	store := testStore(t)
+	if err := store.Set("pane", want); err != nil {
+		t.Fatal(err)
+	}
+	sendErr := errors.New("Discord unavailable")
+	discord := &fakeDiscordClient{messageErr: sendErr}
+	err := NewSyncer(&fakeAgentAPI{outputs: map[string]string{"pane": previous + "\nline 2"}}, discord, store, testConfig()).SyncAgentOutput(context.Background(), Agent{PaneID: "pane"})
+	if !errors.Is(err, sendErr) {
+		t.Fatalf("expected Discord send error, got %v", err)
+	}
+	if got, _ := store.Get("pane"); got != want {
+		t.Fatalf("cursor advanced after Discord send failure: got=%+v want=%+v", got, want)
+	}
+}
+
 func TestSyncAgentOutputPublishesOnlyNewOutputSuffix(t *testing.T) {
 	previous := "line 1"
 	current := "line 1\nline 2"
 	store := testStore(t)
 	if err := store.Set("pane", AgentRecord{
-		ThreadID:   "thread-1",
-		OutputHash: fmt.Sprintf("%x", sha256.Sum256([]byte(normalizeOutput(previous)))),
-		Output:     previous,
+		ThreadID:      "thread-1",
+		OutputHash:    fmt.Sprintf("%x", sha256.Sum256([]byte(normalizeOutput(previous)))),
+		Output:        previous,
+		StreamEnabled: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -417,15 +539,16 @@ func TestSyncAgentOutputPublishesOnlyNewOutputSuffix(t *testing.T) {
 	}
 }
 
-func TestSyncAgentOutputSuppressesRepeatedEmittedUpdate(t *testing.T) {
+func TestSyncAgentOutputSuppressesRepeatedRollingUpdates(t *testing.T) {
 	previous := "line 1\nline 2\nline 3"
 	first := "line 2\nline 3\nline 4"
 	second := "line 3\nline 4\nline 4"
 	store := testStore(t)
 	if err := store.Set("pane", AgentRecord{
-		ThreadID:   "thread-1",
-		OutputHash: fmt.Sprintf("%x", sha256.Sum256([]byte(previous))),
-		Output:     previous,
+		ThreadID:      "thread-1",
+		OutputHash:    fmt.Sprintf("%x", sha256.Sum256([]byte(previous))),
+		Output:        previous,
+		StreamEnabled: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +569,7 @@ func TestSyncAgentOutputSuppressesRepeatedEmittedUpdate(t *testing.T) {
 
 func TestSyncAgentOutputUsesSelfContainedFencesForLongOutput(t *testing.T) {
 	store := testStore(t)
-	if err := store.Set("pane", AgentRecord{ThreadID: "thread-1"}); err != nil {
+	if err := store.Set("pane", AgentRecord{ThreadID: "thread-1", StreamEnabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	api := &fakeAgentAPI{outputs: map[string]string{"pane": strings.Repeat("x", 4000)}}

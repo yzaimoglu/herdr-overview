@@ -163,15 +163,6 @@ func (b *Bot) setStream(ctx context.Context, paneID string, enabled bool) error 
 	return nil
 }
 
-func (b *Bot) markOutputPending(paneID string) error {
-	record, ok := b.state.Get(paneID)
-	if !ok || record.ThreadID == "" {
-		return fmt.Errorf("no Discord thread mapping for pane %s", paneID)
-	}
-	record.OutputPending = true
-	return b.state.Set(paneID, record)
-}
-
 func (b *Bot) paneForThread(threadID string) (string, bool) {
 	for paneID, record := range b.state.Records() {
 		if record.ThreadID == threadID && !record.Closed {

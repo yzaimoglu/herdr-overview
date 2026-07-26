@@ -296,7 +296,7 @@ func TestAuthorizedRequiresGuildForumUserAndNonBot(t *testing.T) {
 func TestHandleMessageForwardsAuthorizedPromptAndSyncsOutput(t *testing.T) {
 	api := &handlerAgentAPI{output: "agent response"}
 	discord := &handlerDiscordClient{}
-	store := handlerStore(t, AgentRecord{ThreadID: "thread-1"})
+	store := handlerStore(t, AgentRecord{ThreadID: "thread-1", StreamEnabled: true})
 	config := handlerConfig()
 	bot := NewBot(config, api, discord, store, NewSyncer(api, discord, store, config))
 

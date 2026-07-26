@@ -132,8 +132,6 @@ func (s *Syncer) syncAgentThread(ctx context.Context, agent Agent, previous Agen
 	if exists {
 		record.OutputHash = previous.OutputHash
 		record.Output = previous.Output
-		record.OutputMessageHash = previous.OutputMessageHash
-		record.OutputPending = previous.OutputPending
 	}
 	return s.state.Set(agent.PaneID, record)
 }
@@ -216,20 +214,14 @@ func (s *Syncer) SyncAgentOutput(ctx context.Context, agent Agent) error {
 	if hash == record.OutputHash {
 		return nil
 	}
-	update, changed := outputUpdate(record.Output, normalized)
-	if record.OutputPending && update == "" && normalized != "" {
-		update, changed = normalized, true
-	}
-	if changed && update != "" {
-		messageHash := fmt.Sprintf("%x", sha256.Sum256([]byte(update)))
-		if record.OutputPending || messageHash != record.OutputMessageHash {
+	if record.StreamEnabled {
+		update, changed := outputUpdate(record.Output, normalized)
+		if changed && update != "" {
 			for _, chunk := range chunkMessage(update, maxDiscordPayload-fencedOutputOverhead) {
 				if err := s.discord.SendMessage(ctx, record.ThreadID, fencedOutput(chunk)); err != nil {
 					return err
 				}
 			}
-			record.OutputMessageHash = messageHash
-			record.OutputPending = false
 		}
 	}
 	record.OutputHash = hash
