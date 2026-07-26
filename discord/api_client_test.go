@@ -148,6 +148,23 @@ func TestHTTPAgentAPIRejectsNon2xxWithStatusAndAPIError(t *testing.T) {
 	}
 }
 
+func TestHTTPAgentAPIRejectsMalformedErrorWithoutResponseBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, "proxy private details")
+	}))
+	defer server.Close()
+
+	client := NewHTTPAgentAPI(server.URL, server.Client())
+	_, err := client.Overview(context.Background())
+	if err == nil {
+		t.Fatal("expected overview error")
+	}
+	if got := err.Error(); got != "502 Bad Gateway" {
+		t.Fatalf("unexpected error: %q", got)
+	}
+}
+
 func TestHTTPAgentAPIRejectsNon2xxForEveryOperation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)

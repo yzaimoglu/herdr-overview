@@ -110,15 +110,10 @@ func responseError(resp *http.Response) error {
 		Error string `json:"error"`
 	}
 	data, err := io.ReadAll(resp.Body)
-	if err == nil {
-		_ = json.Unmarshal(data, &response)
+	if err == nil && json.Unmarshal(data, &response) == nil {
+		if message := strings.TrimSpace(response.Error); message != "" {
+			return fmt.Errorf("%s: %s", resp.Status, message)
+		}
 	}
-	message := strings.TrimSpace(response.Error)
-	if message == "" {
-		message = strings.TrimSpace(string(data))
-	}
-	if message == "" {
-		message = http.StatusText(resp.StatusCode)
-	}
-	return fmt.Errorf("%s: %s", resp.Status, message)
+	return fmt.Errorf("%s", resp.Status)
 }
