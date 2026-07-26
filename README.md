@@ -18,13 +18,14 @@ The API uses `HERDR_BIN_PATH` when set, otherwise it looks up `herdr` on `PATH`.
 
 ## Run with Docker
 
-The base Compose setup exposes Caddy on port 80 and keeps the API private on the compose network:
+The base Compose setup binds Caddy to `127.0.0.1:9952`, keeps the API private on the compose network, and attaches Caddy to the external `caddy_default` network for a host-level reverse proxy:
 
 ```sh
+docker network create caddy_default
 docker compose up --build
 ```
 
-The API service mounts the host Herdr binary and home directory read-only. Set `HERDR_HOST_BIN` if Herdr is installed somewhere other than `~/.local/bin/herdr`. Open `http://localhost` after the containers start. The Caddy port is also published on the host's NetBird `wt0` address; set `NETBIRD_IP` if that address changes.
+The API service mounts the host Herdr binary and home directory read-only. Set `HERDR_HOST_BIN` if Herdr is installed somewhere other than `~/.local/bin/herdr`. Open `http://localhost:9952` for the local Caddy endpoint, or route the public hostname through the host Caddy service using the `herdr-caddy` network alias.
 
 The overview API and Caddy use Docker's `unless-stopped` restart policy, so they come back after Docker or host reboots. `docker compose down` removes the overview containers and is the intentional way to stop the overview. The Discord adapter is opt-in and is started by adding `docker-compose.discord.yml` to the command.
 
