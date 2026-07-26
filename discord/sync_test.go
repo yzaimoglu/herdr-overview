@@ -17,6 +17,7 @@ type fakeAgentAPI struct {
 	overview        Overview
 	overviewErr     error
 	outputs         map[string]string
+	outputSequence  map[string][]string
 	outputErr       error
 	outputCalls     int
 	current         int
@@ -72,6 +73,11 @@ func (f *fakeAgentAPI) Output(ctx context.Context, paneID string, _ int) (string
 	defer f.mu.Unlock()
 	if f.outputErr != nil {
 		return "", f.outputErr
+	}
+	if sequence := f.outputSequence[paneID]; len(sequence) > 0 {
+		output := sequence[0]
+		f.outputSequence[paneID] = sequence[1:]
+		return output, nil
 	}
 	return f.outputs[paneID], nil
 }
@@ -364,6 +370,33 @@ func TestSyncAgentOutputPublishesOnlyNewOutputSuffix(t *testing.T) {
 	}
 	if len(discord.messages) != 1 || discord.messages[0].content != "```\nline 2\n```" {
 		t.Fatalf("unexpected suffix message: %+v", discord.messages)
+	}
+}
+
+func TestSyncAgentOutputSuppressesRepeatedEmittedUpdate(t *testing.T) {
+	previous := "line 1\nline 2\nline 3"
+	first := "line 2\nline 3\nline 4"
+	second := "line 3\nline 4\nline 4"
+	store := testStore(t)
+	if err := store.Set("pane", AgentRecord{
+		ThreadID:   "thread-1",
+		OutputHash: fmt.Sprintf("%x", sha256.Sum256([]byte(previous))),
+		Output:     previous,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeAgentAPI{outputSequence: map[string][]string{"pane": {first, second}}}
+	discord := &fakeDiscordClient{}
+	syncer := NewSyncer(api, discord, store, testConfig())
+
+	if err := syncer.SyncAgentOutput(context.Background(), Agent{PaneID: "pane"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.SyncAgentOutput(context.Background(), Agent{PaneID: "pane"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(discord.messages) != 1 {
+		t.Fatalf("sent %d repeated updates: %+v", len(discord.messages), discord.messages)
 	}
 }
 

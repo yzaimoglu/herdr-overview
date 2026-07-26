@@ -131,6 +131,7 @@ func (s *Syncer) syncAgentThread(ctx context.Context, agent Agent, previous Agen
 	if exists {
 		record.OutputHash = previous.OutputHash
 		record.Output = previous.Output
+		record.OutputMessageHash = previous.OutputMessageHash
 	}
 	return s.state.Set(agent.PaneID, record)
 }
@@ -214,10 +215,14 @@ func (s *Syncer) SyncAgentOutput(ctx context.Context, agent Agent) error {
 		return nil
 	}
 	if update, changed := outputUpdate(record.Output, normalized); changed && update != "" {
-		for _, chunk := range chunkMessage(update, maxDiscordPayload-fencedOutputOverhead) {
-			if err := s.discord.SendMessage(ctx, record.ThreadID, fencedOutput(chunk)); err != nil {
-				return err
+		messageHash := fmt.Sprintf("%x", sha256.Sum256([]byte(update)))
+		if messageHash != record.OutputMessageHash {
+			for _, chunk := range chunkMessage(update, maxDiscordPayload-fencedOutputOverhead) {
+				if err := s.discord.SendMessage(ctx, record.ThreadID, fencedOutput(chunk)); err != nil {
+					return err
+				}
 			}
+			record.OutputMessageHash = messageHash
 		}
 	}
 	record.OutputHash = hash
