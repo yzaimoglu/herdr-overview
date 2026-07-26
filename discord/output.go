@@ -26,16 +26,40 @@ func outputUpdate(previous, current string) (string, bool) {
 	}
 	previousLines := strings.Split(previous, "\n")
 	currentLines := strings.Split(current, "\n")
-	for overlap := min(len(previousLines), len(currentLines)); overlap > 0; overlap-- {
-		if strings.Join(previousLines[len(previousLines)-overlap:], "\n") == strings.Join(currentLines[:overlap], "\n") {
-			update := strings.Join(currentLines[overlap:], "\n")
-			if update != "" && previous != update && !strings.HasSuffix(previous, "\n"+update) {
-				return update, true
-			}
-			return "", true
+	previousIndex := 0
+	common := make([]bool, len(currentLines))
+	for i, line := range currentLines {
+		candidate := previousIndex
+		for candidate < len(previousLines) && previousLines[candidate] != line {
+			candidate++
+		}
+		if candidate < len(previousLines) {
+			common[i] = true
+			previousIndex = candidate + 1
 		}
 	}
-	return "", true
+	updates := make([]string, 0)
+	anchored := false
+	for i, line := range currentLines {
+		if common[i] {
+			anchored = true
+			continue
+		}
+		if !anchored || containsLine(previousLines, line) {
+			continue
+		}
+		updates = append(updates, line)
+	}
+	return strings.Join(updates, "\n"), true
+}
+
+func containsLine(lines []string, target string) bool {
+	for _, line := range lines {
+		if line == target {
+			return true
+		}
+	}
+	return false
 }
 
 func chunkMessage(text string, limit int) []string {

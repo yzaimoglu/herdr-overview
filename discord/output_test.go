@@ -29,6 +29,15 @@ func TestOutputUpdateSuppressesRollingWindow(t *testing.T) {
 	}
 }
 
+func TestOutputUpdateExtractsInsertedLinesFromRedrawnSnapshot(t *testing.T) {
+	previous := "old header\nshared line\nold footer"
+	current := "new header\nshared line\nnew output\nold footer"
+	update, changed := outputUpdate(previous, current)
+	if !changed || update != "new output" {
+		t.Fatalf("unexpected redrawn update: changed=%v update=%q", changed, update)
+	}
+}
+
 func TestFormatOutputUsesMarkdownFence(t *testing.T) {
 	if got, want := formatOutput("line 1\nline 2"), "```\nline 1\nline 2\n```"; got != want {
 		t.Fatalf("formatOutput() = %q, want %q", got, want)
