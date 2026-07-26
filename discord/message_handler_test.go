@@ -161,10 +161,10 @@ func TestParseMessageStreamCommands(t *testing.T) {
 	}
 }
 
-func TestHandleMessageEnablesStreamFromCurrentOutput(t *testing.T) {
+func TestHandleMessageEnablesStreamWithoutReplayingHistory(t *testing.T) {
 	api := &handlerAgentAPI{output: "  current output\r\n"}
 	discord := &handlerDiscordClient{}
-	store := handlerStore(t, AgentRecord{ThreadID: "thread-1"})
+	store := handlerStore(t, AgentRecord{ThreadID: "thread-1", Output: "historical output", OutputHash: outputHash("historical output")})
 	bot := NewBot(handlerConfig(), api, discord, store, NewSyncer(api, discord, store, handlerConfig()))
 
 	err := bot.HandleMessage(context.Background(), MessageEvent{
@@ -179,6 +179,27 @@ func TestHandleMessageEnablesStreamFromCurrentOutput(t *testing.T) {
 	}
 	if got := strings.Join(discord.messages, "\n"); got != "Output streaming enabled." {
 		t.Fatalf("acknowledgment = %q", got)
+	}
+}
+
+func TestHandleMessageDoesNotClaimDisabledWhenStatePersistenceFails(t *testing.T) {
+	api := &handlerAgentAPI{output: "refreshed output"}
+	discord := &handlerDiscordClient{}
+	store := handlerStore(t, AgentRecord{ThreadID: "thread-1", StreamEnabled: true, Output: "old output", OutputHash: outputHash("old output")})
+	store.path = t.TempDir()
+	bot := NewBot(handlerConfig(), api, discord, store, NewSyncer(api, discord, store, handlerConfig()))
+
+	err := bot.HandleMessage(context.Background(), MessageEvent{
+		GuildID: "guild", ChannelID: "thread-1", ParentID: "forum", AuthorID: "111", Content: "/stream off",
+	})
+	if err == nil || !strings.Contains(err.Error(), "persist stream state") {
+		t.Fatalf("error = %v, want persistence failure", err)
+	}
+	if len(discord.messages) != 1 || discord.messages[0] != "I couldn't save output streaming state." {
+		t.Fatalf("acknowledgment = %v", discord.messages)
+	}
+	if record, ok := store.Get("pane-1"); !ok || !record.StreamEnabled || record.Output != "old output" {
+		t.Fatalf("state changed after persistence failure: ok=%v record=%+v", ok, record)
 	}
 }
 

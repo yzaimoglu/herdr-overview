@@ -17,7 +17,11 @@ const (
 	messageStreamOff = "stream_off"
 )
 
-var errUnknownThread = errors.New("message thread is not linked to a Herdr pane")
+var (
+	errUnknownThread = errors.New("message thread is not linked to a Herdr pane")
+	errStreamRefresh = errors.New("refresh stream cursor")
+	errStreamPersist = errors.New("persist stream state")
+)
 
 // Bot handles authorized Discord messages and runs reconciliation alongside the gateway.
 type Bot struct {
@@ -96,7 +100,10 @@ func (b *Bot) HandleMessage(ctx context.Context, event MessageEvent) error {
 		}
 	case messageStreamOff:
 		if err := b.setStream(ctx, paneID, false); err != nil {
-			return b.agentError(ctx, event.ChannelID, "Output streaming disabled, but the cursor could not be refreshed.", "refresh stream cursor", err)
+			if errors.Is(err, errStreamRefresh) {
+				return b.agentError(ctx, event.ChannelID, "Output streaming disabled, but the cursor could not be refreshed.", "refresh stream cursor", err)
+			}
+			return b.agentError(ctx, event.ChannelID, "I couldn't save output streaming state.", "persist stream state", err)
 		}
 		if err := b.discord.SendMessage(ctx, event.ChannelID, "Output streaming disabled."); err != nil {
 			return fmt.Errorf("acknowledge stream disable: %w", err)
@@ -120,6 +127,9 @@ func (b *Bot) HandleMessage(ctx context.Context, event MessageEvent) error {
 }
 
 func (b *Bot) setStream(ctx context.Context, paneID string, enabled bool) error {
+	unlock := b.syncer.lockPane(paneID)
+	defer unlock()
+
 	record, ok := b.state.Get(paneID)
 	if !ok || record.ThreadID == "" {
 		return fmt.Errorf("no Discord thread mapping for pane %s", paneID)
@@ -127,12 +137,15 @@ func (b *Bot) setStream(ctx context.Context, paneID string, enabled bool) error 
 	if enabled {
 		output, err := b.api.Output(ctx, paneID, 0)
 		if err != nil {
-			return err
+			return errors.Join(errStreamRefresh, err)
 		}
 		record.StreamEnabled = true
 		record.Output = normalizeOutput(output)
 		record.OutputHash = fmt.Sprintf("%x", sha256.Sum256([]byte(record.Output)))
-		return b.state.Set(paneID, record)
+		if err := b.state.Set(paneID, record); err != nil {
+			return errors.Join(errStreamPersist, err)
+		}
+		return nil
 	}
 
 	record.StreamEnabled = false
@@ -142,9 +155,12 @@ func (b *Bot) setStream(ctx context.Context, paneID string, enabled bool) error 
 		record.OutputHash = fmt.Sprintf("%x", sha256.Sum256([]byte(record.Output)))
 	}
 	if err := b.state.Set(paneID, record); err != nil {
-		return err
+		return errors.Join(errStreamPersist, err)
 	}
-	return refreshErr
+	if refreshErr != nil {
+		return errors.Join(errStreamRefresh, refreshErr)
+	}
+	return nil
 }
 
 func (b *Bot) markOutputPending(paneID string) error {

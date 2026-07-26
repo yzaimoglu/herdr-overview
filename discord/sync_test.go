@@ -13,21 +13,23 @@ import (
 )
 
 type fakeAgentAPI struct {
-	mu              sync.Mutex
-	overview        Overview
-	overviewErr     error
-	outputs         map[string]string
-	outputSequence  map[string][]string
-	outputErr       error
-	outputCalls     int
-	current         int
-	maxCurrent      int
-	outputStarted   chan struct{}
-	outputRelease   chan struct{}
-	outputOnce      sync.Once
-	overviewStarted chan struct{}
-	overviewRelease chan struct{}
-	overviewOnce    sync.Once
+	mu                  sync.Mutex
+	overview            Overview
+	overviewErr         error
+	outputs             map[string]string
+	outputSequence      map[string][]string
+	outputErr           error
+	outputCalls         int
+	current             int
+	maxCurrent          int
+	outputStarted       chan struct{}
+	outputRelease       chan struct{}
+	outputOnce          sync.Once
+	outputSecondStarted chan struct{}
+	outputSecondOnce    sync.Once
+	overviewStarted     chan struct{}
+	overviewRelease     chan struct{}
+	overviewOnce        sync.Once
 }
 
 func (f *fakeAgentAPI) Overview(context.Context) (Overview, error) {
@@ -46,6 +48,9 @@ func (f *fakeAgentAPI) Overview(context.Context) (Overview, error) {
 func (f *fakeAgentAPI) Output(ctx context.Context, paneID string, _ int) (string, error) {
 	f.mu.Lock()
 	f.outputCalls++
+	if f.outputCalls == 2 && f.outputSecondStarted != nil {
+		f.outputSecondOnce.Do(func() { close(f.outputSecondStarted) })
+	}
 	f.current++
 	if f.current > f.maxCurrent {
 		f.maxCurrent = f.current
@@ -181,6 +186,45 @@ func TestReconcileCreatesOneThreadAndDoesNotDuplicate(t *testing.T) {
 	}
 	if len(discord.created) != 1 {
 		t.Fatalf("created %d threads", len(discord.created))
+	}
+}
+
+func TestReconcilePreservesStreamEnabledAfterStateReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store, err := NewStateStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := AgentRecord{
+		ThreadID:      "thread-1",
+		Status:        "working",
+		StreamEnabled: true,
+		Output:        "cursor",
+		OutputHash:    outputHash("cursor"),
+	}
+	if err := store.Set("pane", want); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := NewStateStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &fakeAgentAPI{overview: Overview{Agents: []Agent{{PaneID: "pane", Status: "working"}}}, outputs: map[string]string{"pane": "cursor"}}
+	discord := &fakeDiscordClient{found: map[string]Thread{"pane": {ID: "thread-1", ParentID: "forum"}}}
+	syncer := NewSyncer(api, discord, reloaded, testConfig())
+
+	if err := syncer.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if record, ok := reloaded.Get("pane"); !ok || !record.StreamEnabled {
+		t.Fatalf("stream setting was not preserved: ok=%v record=%+v", ok, record)
+	}
+	persisted, err := NewStateStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record, ok := persisted.Get("pane"); !ok || !record.StreamEnabled {
+		t.Fatalf("stream setting was not persisted after reconciliation: ok=%v record=%+v", ok, record)
 	}
 }
 
@@ -479,6 +523,49 @@ func TestConcurrentOutputAndReconcileDoNotClobberState(t *testing.T) {
 	record, _ := store.Get("pane")
 	if record.Status != "idle" || record.OutputHash == "" || record.Output != "new output" {
 		t.Fatalf("stale state won: %+v", record)
+	}
+}
+
+func TestStreamCommandWaitsForConcurrentReconciliation(t *testing.T) {
+	api := &fakeAgentAPI{
+		overview:            Overview{Agents: []Agent{{PaneID: "pane", Status: "working"}}},
+		outputs:             map[string]string{"pane": "current output"},
+		outputStarted:       make(chan struct{}),
+		outputRelease:       make(chan struct{}),
+		outputSecondStarted: make(chan struct{}),
+	}
+	discord := &fakeDiscordClient{found: map[string]Thread{"pane": {ID: "thread-1", ParentID: "forum"}}}
+	store := testStore(t)
+	if err := store.Set("pane", AgentRecord{ThreadID: "thread-1", Status: "working"}); err != nil {
+		t.Fatal(err)
+	}
+	syncer := NewSyncer(api, discord, store, testConfig())
+	bot := NewBot(handlerConfig(), api, discord, store, syncer)
+
+	commandDone := make(chan error, 1)
+	go func() {
+		commandDone <- bot.HandleMessage(context.Background(), MessageEvent{
+			GuildID: "guild", ChannelID: "thread-1", ParentID: "forum", AuthorID: "111", Content: "/stream on",
+		})
+	}()
+	<-api.outputStarted
+
+	reconcileDone := make(chan error, 1)
+	go func() { reconcileDone <- syncer.Reconcile(context.Background()) }()
+	select {
+	case <-api.outputSecondStarted:
+		t.Fatal("reconciliation started a concurrent output refresh for the pane")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(api.outputRelease)
+	if err := <-commandDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-reconcileDone; err != nil {
+		t.Fatal(err)
+	}
+	if record, ok := store.Get("pane"); !ok || !record.StreamEnabled {
+		t.Fatalf("stream command was clobbered: ok=%v record=%+v", ok, record)
 	}
 }
 

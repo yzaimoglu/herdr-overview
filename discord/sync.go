@@ -123,10 +123,11 @@ func (s *Syncer) syncAgentThread(ctx context.Context, agent Agent, previous Agen
 		}
 	}
 	record := AgentRecord{
-		ThreadID: thread.ID,
-		Status:   agent.Status,
-		Closed:   false,
-		LastSync: s.now(),
+		ThreadID:      thread.ID,
+		Status:        agent.Status,
+		StreamEnabled: previous.StreamEnabled,
+		Closed:        false,
+		LastSync:      s.now(),
 	}
 	if exists {
 		record.OutputHash = previous.OutputHash
