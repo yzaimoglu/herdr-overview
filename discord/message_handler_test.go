@@ -371,6 +371,7 @@ func TestMessageHandlerFiltersBeforeDiscordLookup(t *testing.T) {
 		{Message: &discordgo.Message{GuildID: "other", ChannelID: "thread-1", Author: &discordgo.User{ID: "111"}}},
 		{Message: &discordgo.Message{GuildID: "guild", ChannelID: "thread-1", Author: nil}},
 		{Message: &discordgo.Message{GuildID: "guild", ChannelID: "thread-1", Author: &discordgo.User{ID: "111", Bot: true}}},
+		{Message: &discordgo.Message{GuildID: "guild", ChannelID: "thread-1", Author: &discordgo.User{ID: "222"}}},
 		{Message: &discordgo.Message{GuildID: "guild", ChannelID: "", Author: &discordgo.User{ID: "111"}}},
 	} {
 		if err := client.handleMessage(context.Background(), client.session, event, func(context.Context, MessageEvent) error { return nil }); err != nil {
@@ -379,6 +380,24 @@ func TestMessageHandlerFiltersBeforeDiscordLookup(t *testing.T) {
 	}
 	if lookups != 0 {
 		t.Fatalf("Discord lookups = %d, want 0", lookups)
+	}
+
+	lookups = 0
+	client = testDiscordgoClient(t, func(*http.Request) (*http.Response, error) {
+		lookups++
+		return discordResponse(`{"id":"channel","parent_id":"other-forum","type":11}`), nil
+	})
+	handlerCalls := 0
+	if err := client.handleMessage(context.Background(), client.session, &discordgo.MessageCreate{Message: &discordgo.Message{
+		GuildID: "guild", ChannelID: "thread-1", Author: &discordgo.User{ID: "111"},
+	}}, func(context.Context, MessageEvent) error {
+		handlerCalls++
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if lookups != 1 || handlerCalls != 0 {
+		t.Fatalf("wrong-channel handling = lookups %d, handler calls %d", lookups, handlerCalls)
 	}
 }
 
@@ -397,7 +416,7 @@ func TestMessageHandlerErrorLogDoesNotIncludeRawError(t *testing.T) {
 
 func testDiscordgoClient(t *testing.T, transport func(*http.Request) (*http.Response, error)) *DiscordgoClient {
 	t.Helper()
-	client, err := NewDiscordgoClient(Config{GuildID: "guild", ForumChannelID: "forum", Token: "test-token"})
+	client, err := NewDiscordgoClient(Config{GuildID: "guild", ForumChannelID: "forum", Token: "test-token", AllowedUserIDs: map[string]struct{}{"111": {}}})
 	if err != nil {
 		t.Fatal(err)
 	}

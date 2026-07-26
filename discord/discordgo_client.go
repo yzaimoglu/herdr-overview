@@ -101,6 +101,9 @@ func (c *DiscordgoClient) handleMessage(ctx context.Context, session *discordgo.
 	if event == nil || event.Message == nil || event.Author == nil || event.GuildID == "" || event.GuildID != c.config.GuildID || event.ChannelID == "" || event.Author.ID == "" || event.Author.Bot {
 		return nil
 	}
+	if _, ok := c.config.AllowedUserIDs[event.Author.ID]; !ok {
+		return nil
+	}
 	channel, err := session.Channel(event.ChannelID)
 	if err != nil {
 		return fmt.Errorf("lookup Discord channel: %w", err)
