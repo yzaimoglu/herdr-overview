@@ -18,7 +18,7 @@ The API uses `HERDR_BIN_PATH` when set, otherwise it looks up `herdr` on `PATH`.
 
 ## Run with Docker
 
-The compose setup exposes Caddy on port 80 and keeps the API private on the compose network:
+The base Compose setup exposes Caddy on port 80 and keeps the API private on the compose network:
 
 ```sh
 docker compose up --build
@@ -26,7 +26,7 @@ docker compose up --build
 
 The API service mounts the host Herdr binary and home directory read-only. Set `HERDR_HOST_BIN` if Herdr is installed somewhere other than `~/.local/bin/herdr`. Open `http://localhost` after the containers start. The Caddy port is also published on the host's NetBird `wt0` address; set `NETBIRD_IP` if that address changes.
 
-Both services use Docker's `unless-stopped` restart policy, so they come back after Docker or host reboots. `docker compose down` removes the containers and is the intentional way to stop the overview.
+The overview API and Caddy use Docker's `unless-stopped` restart policy, so they come back after Docker or host reboots. `docker compose down` removes the overview containers and is the intentional way to stop the overview. The Discord adapter is opt-in and is started by adding `docker-compose.discord.yml` to the command.
 
 ## Discord setup
 
@@ -52,11 +52,11 @@ DISCORD_FORUM_CHANNEL_ID=<forum-channel-id>
 DISCORD_ALLOWED_USER_IDS=<user-id>,<another-user-id>
 ```
 
-`HERDR_OVERVIEW_API_URL` defaults to `http://overview-api:8787`, `DISCORD_SYNC_INTERVAL` defaults to `10s`, and `DISCORD_STATE_PATH` defaults to `/data/discord-state.json`. The `discord-state` named volume stores the thread mappings and synchronization state at `/data`, so normal `docker compose down` and container recreation preserve it. Use `docker compose down -v` only when intentionally discarding that state.
+`HERDR_OVERVIEW_API_URL` defaults to `http://overview-api:8787`, `DISCORD_SYNC_INTERVAL` defaults to `10s`, and `DISCORD_STATE_PATH` defaults to `/data/discord-state.json`. The `discord-state` named volume stores the thread mappings and synchronization state at `/data`, so `docker compose -f docker-compose.yml -f docker-compose.discord.yml down` and container recreation preserve it. Use the same command with `-v` only when intentionally discarding that state.
 
 ### Discord smoke test
 
-1. Start Compose with the required Discord variables: `docker compose up --build`.
+1. Start the base services and Discord adapter with the required Discord variables: `docker compose -f docker-compose.yml -f docker-compose.discord.yml up --build`.
 2. Confirm the bot connects without logging the token.
 3. Confirm every current Herdr agent has one forum thread.
 4. Send a normal message as an allowed user and verify the API receives a prompt.

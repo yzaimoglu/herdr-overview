@@ -1,0 +1,21 @@
+services:
+  discord-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.discord
+    depends_on:
+      - overview-api
+    environment:
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:?DISCORD_BOT_TOKEN is required}
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID}
+      DISCORD_FORUM_CHANNEL_ID: ${DISCORD_FORUM_CHANNEL_ID}
+      DISCORD_ALLOWED_USER_IDS: ${DISCORD_ALLOWED_USER_IDS}
+      HERDR_OVERVIEW_API_URL: ${HERDR_OVERVIEW_API_URL:-http://overview-api:8787}
+      DISCORD_STATE_PATH: ${DISCORD_STATE_PATH:-/data/discord-state.json}
+      DISCORD_SYNC_INTERVAL: ${DISCORD_SYNC_INTERVAL:-10s}
+    volumes:
+      - discord-state:/data
+    restart: unless-stopped
+
+volumes:
+  discord-state:
