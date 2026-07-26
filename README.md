@@ -18,15 +18,59 @@ The API uses `HERDR_BIN_PATH` when set, otherwise it looks up `herdr` on `PATH`.
 
 ## Run with Docker
 
-The compose setup exposes Caddy on port 80 and keeps the API private on the compose network:
+The base Compose setup binds Caddy to `127.0.0.1:9952`, keeps the API private on the compose network, and attaches Caddy to the external `caddy_default` network for a host-level reverse proxy:
 
 ```sh
+docker network create caddy_default
 docker compose up --build
 ```
 
-The API service mounts the host Herdr binary and home directory read-only. Set `HERDR_HOST_BIN` if Herdr is installed somewhere other than `~/.local/bin/herdr`. Open `http://localhost` after the containers start. The Caddy port is also published on the host's NetBird `wt0` address; set `NETBIRD_IP` if that address changes.
+The API service mounts the host Herdr binary and home directory read-only. Set `HERDR_HOST_BIN` if Herdr is installed somewhere other than `~/.local/bin/herdr`. Open `http://localhost:9952` for the local Caddy endpoint, or route the public hostname through the host Caddy service using the `herdr-caddy` network alias.
 
-Both services use Docker's `unless-stopped` restart policy, so they come back after Docker or host reboots. `docker compose down` removes the containers and is the intentional way to stop the overview.
+The overview API and Caddy use Docker's `unless-stopped` restart policy, so they come back after Docker or host reboots. `docker compose down` removes the overview containers and is the intentional way to stop the overview. The Discord adapter is opt-in and is started by adding `docker-compose.discord.yml` to the command.
+
+## Discord setup
+
+Create a Discord application in the [Discord Developer Portal](https://discord.com/developers/applications), add a bot, and copy its token into an untracked `.env` file. Never commit the token. In the application's **Bot** settings, enable the **Message Content Intent** under **Privileged Gateway Intents**.
+
+Invite the bot to the target guild with the `bot` scope and these permissions on the target forum channel:
+
+- View Channel
+- Read Message History
+- Send Messages
+- Send Messages in Threads
+- Create Public Threads
+- Manage Threads
+
+Create a forum channel for Herdr agents in the target guild. Copy the guild and forum channel IDs with Discord Developer Mode enabled. Add the Discord user IDs allowed to control agents as a comma-separated list. The adapter ignores messages from all other users.
+
+Set these variables in the untracked `.env` file:
+
+```dotenv
+DISCORD_BOT_TOKEN=<bot-token>
+DISCORD_GUILD_ID=<guild-id>
+DISCORD_FORUM_CHANNEL_ID=<forum-channel-id>
+DISCORD_ALLOWED_USER_IDS=<user-id>,<another-user-id>
+```
+
+`HERDR_OVERVIEW_API_URL` defaults to `http://overview-api:8787`, `DISCORD_SYNC_INTERVAL` defaults to `10s`, and `DISCORD_STATE_PATH` defaults to `/data/discord-state.json`. The `discord-state` named volume stores the thread mappings and synchronization state at `/data`, so `docker compose -f docker-compose.yml -f docker-compose.discord.yml down` and container recreation preserve it. Use the same command with `-v` only when intentionally discarding that state.
+
+### Discord output streaming
+
+- `/stream on` enables output messages for the current thread.
+- `/stream off` disables output messages for the current thread.
+- Streaming is off by default and the setting persists per agent.
+- Enabling streaming starts from the current output and does not replay history.
+- Lifecycle/status messages and prompt acknowledgements still appear while output streaming is off.
+
+### Discord smoke test
+
+1. Start the base services and Discord adapter with the required Discord variables: `docker compose -f docker-compose.yml -f docker-compose.discord.yml up --build`.
+2. Confirm the bot connects without logging the token.
+3. Confirm every current Herdr agent has one forum thread.
+4. Send a normal message as an allowed user and verify the API receives a prompt.
+5. Send `/interrupt` and verify the thread reports the action.
+6. Close an agent through the web UI and verify the matching thread archives after reconciliation.
 
 ## API surface
 

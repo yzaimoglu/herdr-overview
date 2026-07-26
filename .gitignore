@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .astro/
+.worktrees/
 *.log
 .DS_Store
 
@@ -18,3 +19,6 @@ credentials.json
 *.test
 server/herdr-overview-api
 /server/server
+/discord/herdr-discord-bot
+/data/
+discord-state.json

@@ -1,0 +1,14 @@
+FROM golang:1.26 AS build
+WORKDIR /src/discord
+COPY discord/go.mod discord/go.sum ./
+RUN go mod download
+COPY discord/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/herdr-discord-bot .
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/herdr-discord-bot /usr/local/bin/herdr-discord-bot
+VOLUME ["/data"]
+ENTRYPOINT ["/usr/local/bin/herdr-discord-bot"]

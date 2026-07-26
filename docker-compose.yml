@@ -19,7 +19,15 @@ services:
     depends_on:
       - overview-api
     ports:
-      - "127.0.0.1:80:80"
-      # NetBird's wt0 address. Override NETBIRD_IP if the host address changes.
-      - "${NETBIRD_IP:-100.126.169.52}:80:80"
+      - "127.0.0.1:9952:80"
+    networks:
+      default: {}
+      caddy_default:
+          aliases:
+            - herdr-caddy
     restart: unless-stopped
+
+networks:
+  caddy_default:
+    external: true
+    name: caddy_default
