@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -181,6 +182,30 @@ func TestHandleMessageForwardsAuthorizedPromptAndSyncsOutput(t *testing.T) {
 	}
 	if len(discord.messages) != 2 || discord.messages[0] != "Prompt sent." || !strings.Contains(discord.messages[1], "agent response") {
 		t.Fatalf("unexpected acknowledgments: %#v", discord.messages)
+	}
+}
+
+func TestHandlePromptPublishesFirstRollingResponseSnapshot(t *testing.T) {
+	previous := "old terminal screen"
+	current := "new terminal screen"
+	api := &fakeAgentAPI{outputs: map[string]string{"pane-1": current}}
+	discord := &fakeDiscordClient{}
+	store := handlerStore(t, AgentRecord{
+		ThreadID:   "thread-1",
+		Status:     "working",
+		OutputHash: fmt.Sprintf("%x", sha256.Sum256([]byte(previous))),
+		Output:     previous,
+	})
+	config := handlerConfig()
+	bot := NewBot(config, api, discord, store, NewSyncer(api, discord, store, config))
+
+	if err := bot.HandleMessage(context.Background(), MessageEvent{
+		GuildID: "guild", ChannelID: "thread-1", ParentID: "forum", AuthorID: "111", Content: "continue",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(discord.messages) != 2 || discord.messages[0].content != "Prompt sent." || !strings.Contains(discord.messages[1].content, current) {
+		t.Fatalf("prompt response snapshot missing: %+v", discord.messages)
 	}
 }
 

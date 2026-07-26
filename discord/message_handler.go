@@ -74,6 +74,9 @@ func (b *Bot) HandleMessage(ctx context.Context, event MessageEvent) error {
 		if err := b.api.Prompt(ctx, paneID, body); err != nil {
 			return b.agentError(ctx, event.ChannelID, "I couldn't send that prompt to the agent.", "send prompt", err)
 		}
+		if err := b.markOutputPending(paneID); err != nil {
+			return b.agentError(ctx, event.ChannelID, "Prompt sent, but I couldn't track its response.", "track prompt output", err)
+		}
 		if err := b.discord.SendMessage(ctx, event.ChannelID, "Prompt sent."); err != nil {
 			return fmt.Errorf("acknowledge prompt: %w", err)
 		}
@@ -96,6 +99,15 @@ func (b *Bot) HandleMessage(ctx context.Context, event MessageEvent) error {
 		}
 	}
 	return nil
+}
+
+func (b *Bot) markOutputPending(paneID string) error {
+	record, ok := b.state.Get(paneID)
+	if !ok || record.ThreadID == "" {
+		return fmt.Errorf("no Discord thread mapping for pane %s", paneID)
+	}
+	record.OutputPending = true
+	return b.state.Set(paneID, record)
 }
 
 func (b *Bot) paneForThread(threadID string) (string, bool) {
