@@ -1,5 +1,6 @@
 package main
 
+// Agent describes a Herdr agent returned by the overview API.
 type Agent struct {
 	Name        string `json:"name"`
 	Kind        string `json:"agent"`
@@ -12,10 +13,12 @@ type Agent struct {
 	Focused     bool   `json:"focused"`
 }
 
+// Overview contains the current Herdr agents.
 type Overview struct {
 	Agents []Agent `json:"agents"`
 }
 
+// Thread identifies a Discord forum thread associated with an agent.
 type Thread struct {
 	ID       string
 	ParentID string
@@ -23,6 +26,7 @@ type Thread struct {
 	Archived bool
 }
 
+// MessageEvent is an inbound Discord message relevant to the adapter.
 type MessageEvent struct {
 	GuildID     string
 	ChannelID   string

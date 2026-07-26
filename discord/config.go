@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// Config contains runtime settings for the Discord adapter.
 type Config struct {
 	Token          string
 	GuildID        string
@@ -16,6 +17,7 @@ type Config struct {
 	SyncInterval   time.Duration
 }
 
+// LoadConfig reads and validates adapter settings from getenv.
 func LoadConfig(getenv func(string) string) (Config, error) {
 	if getenv == nil {
 		return Config{}, fmt.Errorf("missing DISCORD_BOT_TOKEN")
