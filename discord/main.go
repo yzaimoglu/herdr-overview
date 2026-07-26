@@ -14,7 +14,7 @@ import (
 type gateway interface {
 	Open() error
 	Close() error
-	RegisterMessageHandler(func(context.Context, MessageEvent) error) func()
+	RegisterMessageHandler(context.Context, func(context.Context, MessageEvent) error) func()
 }
 
 // Run opens the Discord Gateway, reconciles immediately, and then reconciles serially on a ticker.
@@ -29,7 +29,7 @@ func (b *Bot) Run(ctx context.Context) (err error) {
 	if !ok {
 		return os.ErrInvalid
 	}
-	removeHandler := gw.RegisterMessageHandler(b.HandleMessage)
+	removeHandler := gw.RegisterMessageHandler(ctx, b.HandleMessage)
 	defer removeHandler()
 	if err := gw.Open(); err != nil {
 		return err

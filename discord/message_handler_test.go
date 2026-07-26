@@ -1,14 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"log"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/bwmarrin/discordgo"
 )
 
 type handlerAgentAPI struct {
@@ -88,7 +94,7 @@ func (f *runDiscordClient) Close() error {
 	return nil
 }
 
-func (f *runDiscordClient) RegisterMessageHandler(handler func(context.Context, MessageEvent) error) func() {
+func (f *runDiscordClient) RegisterMessageHandler(_ context.Context, handler func(context.Context, MessageEvent) error) func() {
 	f.handler = handler
 	return func() { f.handler = nil }
 }
@@ -295,6 +301,121 @@ func TestBotRunReconcilesImmediatelyAndClosesOnCancellation(t *testing.T) {
 	}
 	if api.overviewCalls.Load() != 1 {
 		t.Fatalf("overview calls = %d, want immediate reconciliation only", api.overviewCalls.Load())
+	}
+}
+
+func TestMessageHandlerUsesRunContext(t *testing.T) {
+	client := testDiscordgoClient(t, func(*http.Request) (*http.Response, error) {
+		return discordResponse(`{"id":"thread-1","guild_id":"guild","parent_id":"forum","type":11}`), nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var got context.Context
+	wantErr := errors.New("handler failed with private prompt")
+	err := client.handleMessage(ctx, client.session, &discordgo.MessageCreate{Message: &discordgo.Message{
+		GuildID: "guild", ChannelID: "thread-1", Content: "private prompt", Author: &discordgo.User{ID: "111"},
+	}}, func(gotContext context.Context, _ MessageEvent) error {
+		got = gotContext
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) || got != ctx {
+		t.Fatalf("handleMessage() error/context = %v/%v, want %v/%v", err, got, wantErr, ctx)
+	}
+}
+
+func TestFindThreadByPaneUsesExactAdapterNameAndForumParent(t *testing.T) {
+	client := testDiscordgoClient(t, func(*http.Request) (*http.Response, error) {
+		return discordResponse(`{"threads":[
+			{"id":"unrelated","name":"unrelated [pane-1]","parent_id":"forum","type":11},
+			{"id":"renamed","name":"Herdr agent [pane-1] renamed","parent_id":"forum","type":11},
+			{"id":"wrong-parent","name":"Herdr agent [pane-1]","parent_id":"other-forum","type":11},
+			{"id":"exact","name":"Herdr agent [pane-1]","parent_id":"forum","type":11}
+		]}`), nil
+	})
+
+	thread, found, err := client.FindThreadByPane(context.Background(), "guild", "pane-1")
+	if err != nil || !found || thread.ID != "exact" {
+		t.Fatalf("FindThreadByPane() = %+v, %v, %v", thread, found, err)
+	}
+	if got := canonicalThreadName("worker [pane-1]"); got != "Herdr agent [pane-1]" {
+		t.Fatalf("canonicalThreadName() = %q", got)
+	}
+}
+
+func TestCreateForumThreadUsesCanonicalAdapterName(t *testing.T) {
+	var requestBody string
+	client := testDiscordgoClient(t, func(request *http.Request) (*http.Response, error) {
+		data, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		requestBody = string(data)
+		return discordResponse(`{"id":"thread-1","name":"Herdr agent [pane-1]","parent_id":"forum","type":11}`), nil
+	})
+
+	if _, err := client.CreateForumThread(context.Background(), "guild", "forum", "worker [pane-1]"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(requestBody, `"name":"Herdr agent [pane-1]"`) {
+		t.Fatalf("request used non-canonical thread name: %s", requestBody)
+	}
+}
+
+func TestMessageHandlerFiltersBeforeDiscordLookup(t *testing.T) {
+	lookups := 0
+	client := testDiscordgoClient(t, func(*http.Request) (*http.Response, error) {
+		lookups++
+		return discordResponse(`{"id":"thread-1","parent_id":"forum","type":11}`), nil
+	})
+	for _, event := range []*discordgo.MessageCreate{
+		{Message: &discordgo.Message{GuildID: "other", ChannelID: "thread-1", Author: &discordgo.User{ID: "111"}}},
+		{Message: &discordgo.Message{GuildID: "guild", ChannelID: "thread-1", Author: nil}},
+		{Message: &discordgo.Message{GuildID: "guild", ChannelID: "thread-1", Author: &discordgo.User{ID: "111", Bot: true}}},
+		{Message: &discordgo.Message{GuildID: "guild", ChannelID: "", Author: &discordgo.User{ID: "111"}}},
+	} {
+		if err := client.handleMessage(context.Background(), client.session, event, func(context.Context, MessageEvent) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if lookups != 0 {
+		t.Fatalf("Discord lookups = %d, want 0", lookups)
+	}
+}
+
+func TestMessageHandlerErrorLogDoesNotIncludeRawError(t *testing.T) {
+	privatePrompt := "private prompt must not be logged"
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previous)
+
+	logMessageHandlerError(errors.New(privatePrompt))
+	if strings.Contains(output.String(), privatePrompt) || !strings.Contains(output.String(), "handler error") {
+		t.Fatalf("unsafe handler log: %q", output.String())
+	}
+}
+
+func testDiscordgoClient(t *testing.T, transport func(*http.Request) (*http.Response, error)) *DiscordgoClient {
+	t.Helper()
+	client, err := NewDiscordgoClient(Config{GuildID: "guild", ForumChannelID: "forum", Token: "test-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.session.Client = &http.Client{Transport: roundTripFunc(transport)}
+	return client
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func discordResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
 	}
 }
 

@@ -32,7 +32,7 @@ func (c *DiscordgoClient) CreateForumThread(ctx context.Context, guildID, forumI
 		return Thread{}, err
 	}
 	channel, err := c.session.ForumThreadStartComplex(forumID, &discordgo.ThreadStart{
-		Name: name,
+		Name: canonicalThreadName(name),
 		Type: discordgo.ChannelTypeGuildPublicThread,
 	}, &discordgo.MessageSend{Content: "Thread created."})
 	if err != nil {
@@ -55,9 +55,8 @@ func (c *DiscordgoClient) FindThreadByPane(ctx context.Context, guildID, paneID 
 	if threads == nil {
 		return Thread{}, false, nil
 	}
-	needle := "[" + paneID + "]"
 	for _, channel := range threads.Threads {
-		if channel == nil || channel.ParentID != c.config.ForumChannelID || !strings.Contains(channel.Name, needle) {
+		if channel == nil || channel.ParentID != c.config.ForumChannelID || channel.Name != adapterThreadName(paneID) {
 			continue
 		}
 		return threadFromChannel(channel), true, nil
@@ -87,30 +86,40 @@ func (c *DiscordgoClient) ArchiveThread(ctx context.Context, threadID string) er
 }
 
 // RegisterMessageHandler registers the single inbound message handler and returns its removal function.
-func (c *DiscordgoClient) RegisterMessageHandler(handler func(context.Context, MessageEvent) error) func() {
+func (c *DiscordgoClient) RegisterMessageHandler(ctx context.Context, handler func(context.Context, MessageEvent) error) func() {
 	return c.session.AddHandler(func(session *discordgo.Session, event *discordgo.MessageCreate) {
-		if event == nil || event.Message == nil || event.Author == nil || event.GuildID == "" || event.GuildID != c.config.GuildID || event.Author.Bot {
-			return
-		}
-		channel, err := session.Channel(event.ChannelID)
-		if err != nil {
-			log.Printf("Discord channel lookup failed: %v", err)
-			return
-		}
-		if channel == nil || channel.ParentID != c.config.ForumChannelID || !channel.IsThread() {
-			return
-		}
-		if err := handler(context.Background(), MessageEvent{
-			GuildID:     event.GuildID,
-			ChannelID:   event.ChannelID,
-			ParentID:    channel.ParentID,
-			AuthorID:    event.Author.ID,
-			Content:     event.Content,
-			AuthorIsBot: event.Author.Bot,
-		}); err != nil {
-			log.Printf("Discord message handling failed: %v", err)
+		if err := c.handleMessage(ctx, session, event, handler); err != nil {
+			logMessageHandlerError(err)
 		}
 	})
+}
+
+func (c *DiscordgoClient) handleMessage(ctx context.Context, session *discordgo.Session, event *discordgo.MessageCreate, handler func(context.Context, MessageEvent) error) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if event == nil || event.Message == nil || event.Author == nil || event.GuildID == "" || event.GuildID != c.config.GuildID || event.ChannelID == "" || event.Author.ID == "" || event.Author.Bot {
+		return nil
+	}
+	channel, err := session.Channel(event.ChannelID)
+	if err != nil {
+		return fmt.Errorf("lookup Discord channel: %w", err)
+	}
+	if channel == nil || channel.ParentID != c.config.ForumChannelID || !channel.IsThread() {
+		return nil
+	}
+	return handler(ctx, MessageEvent{
+		GuildID:     event.GuildID,
+		ChannelID:   event.ChannelID,
+		ParentID:    channel.ParentID,
+		AuthorID:    event.Author.ID,
+		Content:     event.Content,
+		AuthorIsBot: event.Author.Bot,
+	})
+}
+
+func logMessageHandlerError(error) {
+	log.Printf("Discord message handling failed: handler error")
 }
 
 // Open connects the Discord Gateway.
@@ -140,6 +149,20 @@ func threadFromChannel(channel *discordgo.Channel) Thread {
 	thread.Name = channel.Name
 	thread.Archived = channel.ThreadMetadata != nil && channel.ThreadMetadata.Archived
 	return thread
+}
+
+func adapterThreadName(paneID string) string {
+	return "Herdr agent [" + paneID + "]"
+}
+
+func canonicalThreadName(name string) string {
+	name = strings.TrimSpace(name)
+	if end := strings.LastIndex(name, "]"); end == len(name)-1 {
+		if start := strings.LastIndex(name[:end], " ["); start >= 0 && start+2 < end {
+			return adapterThreadName(name[start+2 : end])
+		}
+	}
+	return name
 }
 
 func contextError(ctx context.Context) error {
